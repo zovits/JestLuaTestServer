@@ -7,6 +7,7 @@ Accepts a place file and list of deltas, captures before/after screenshots.
 import asyncio
 import json
 import logging
+import shutil
 import tempfile
 import uuid
 from datetime import datetime
@@ -300,11 +301,9 @@ async def _run_evaluation(
         # Clear studio manager from app state
         request.app.state.studio_manager = None
 
-        # Cleanup temp files
+        # Cleanup temp directory and all contents
         try:
-            if temp_place_path.exists():
-                temp_place_path.unlink()
-            Path(temp_dir).rmdir()
+            shutil.rmtree(temp_dir, ignore_errors=True)
             logger.debug(f"Cleaned up temp directory: {temp_dir}")
         except Exception as e:
             logger.warning(f"Failed to cleanup temp files: {e}")

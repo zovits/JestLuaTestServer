@@ -40,11 +40,11 @@ class PluginManager:
         if registry_path:
             return registry_path
 
-        # Try alternative locations
+        # Try alternative plugin directory locations
         alt_paths = [
-            Path.home() / "AppData" / "Local" / "Roblox" / "Versions" / "RobloxStudioBeta.exe",
-            Path("C:/Program Files/Roblox/RobloxStudioBeta.exe"),
-            Path("C:/Program Files (x86)/Roblox/RobloxStudioBeta.exe"),
+            Path.home() / "AppData" / "Local" / "Roblox" / "InstalledPlugins",
+            Path("C:/Program Files/Roblox/Plugins"),
+            Path("C:/Program Files (x86)/Roblox/Plugins"),
         ]
 
         for path in alt_paths:
@@ -117,6 +117,7 @@ class PluginManager:
 
     def _build_plugin(self) -> bool:
         """Build plugin using Rojo"""
+        config_file: Path | None = None
         try:
             config_file = self._write_config_file()
             subprocess.check_output(
@@ -129,8 +130,8 @@ class PluginManager:
             logger.error(f"Rojo build failed: {e.output if hasattr(e, 'output') else e}")
             return False
         finally:
-            # Always clean up config file
-            if config_file.exists():
+            # Always clean up config file if it was created
+            if config_file is not None and config_file.exists():
                 config_file.unlink()
                 logger.debug("Cleaned up temporary config file")
 

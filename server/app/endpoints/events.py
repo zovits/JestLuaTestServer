@@ -38,7 +38,7 @@ async def event_generator(
         while True:
             if await request.is_disconnected():
                 logger.info("Client disconnected from SSE")
-                studio_manager._plugin_connections.remove(request)
+                studio_manager._plugin_connections.discard(request)
                 # Put request data back if we have any that wasn't fully sent
                 if current_request_data is not None:
                     logger.warning(
@@ -88,7 +88,7 @@ async def event_generator(
                 continue
 
     except asyncio.CancelledError:
-        studio_manager._plugin_connections.remove(request)
+        studio_manager._plugin_connections.discard(request)
         logger.info("SSE connection cancelled")
         # Put request data back if we have any that wasn't fully sent
         if current_request_data is not None:
@@ -98,7 +98,7 @@ async def event_generator(
             await request.app.state.request_queue.put(current_request_data)
         raise
     except Exception as e:
-        studio_manager._plugin_connections.remove(request)
+        studio_manager._plugin_connections.discard(request)
         logger.error(f"Error in SSE stream: {e}")
         # Put request data back if we have any that wasn't fully sent
         if current_request_data is not None:

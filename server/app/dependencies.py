@@ -30,15 +30,6 @@ def get_active_requests(request: Request) -> dict:
     return request.app.state.active_requests
 
 
-def get_rate_limiter(request: Request) -> dict:
-    """Get rate limiter dict from app state"""
-    if not hasattr(request.app.state, "rate_limiter"):
-        from collections import defaultdict
-
-        return defaultdict(list)
-    return request.app.state.rate_limiter
-
-
 def get_accepting_requests(request: Request) -> bool:
     """Check if server is accepting new requests"""
     if not hasattr(request.app.state, "accepting_requests"):
@@ -50,5 +41,4 @@ def get_accepting_requests(request: Request) -> bool:
 StudioManagerDep = Annotated[StudioManager, Depends(get_studio_manager)]
 RequestQueueDep = Annotated[object, Depends(get_request_queue)]
 ActiveRequestsDep = Annotated[dict, Depends(get_active_requests)]
-RateLimiterDep = Annotated[dict, Depends(get_rate_limiter)]
 AcceptingRequestsDep = Annotated[bool, Depends(get_accepting_requests)]

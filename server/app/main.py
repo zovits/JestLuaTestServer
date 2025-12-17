@@ -7,7 +7,6 @@ Receives delta strings, applies them via DataModelDeltaService, and captures scr
 
 import asyncio
 import logging
-from collections import defaultdict
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -51,7 +50,6 @@ async def lifespan(app: FastAPI):
         app.state.studio_manager = None
         app.state.request_queue = asyncio.Queue()
         app.state.active_requests = {}
-        app.state.rate_limiter = defaultdict(list)
         app.state.accepting_requests = True
         app.state.evaluate_lock = asyncio.Lock()
 
@@ -63,29 +61,30 @@ async def lifespan(app: FastAPI):
 
         yield
 
+        # Shutdown logic runs inside context managers so plugin/fflags are still available
         logger.info("Shutting down server...")
 
-    # Stop accepting new requests
-    app.state.accepting_requests = False
-    logger.info("Stopped accepting new requests")
+        # Stop accepting new requests
+        app.state.accepting_requests = False
+        logger.info("Stopped accepting new requests")
 
-    # Wait for active requests to complete (with timeout)
-    max_wait = app_config.shutdown_timeout
-    wait_interval = 0.5
-    elapsed = 0.0
+        # Wait for active requests to complete (with timeout)
+        max_wait = app_config.shutdown_timeout
+        wait_interval = 0.5
+        elapsed = 0.0
 
-    while app.state.active_requests and elapsed < max_wait:
-        active_count = len(app.state.active_requests)
-        logger.info(f"Waiting for {active_count} active request(s) to complete...")
-        await asyncio.sleep(wait_interval)
-        elapsed += wait_interval
+        while app.state.active_requests and elapsed < max_wait:
+            active_count = len(app.state.active_requests)
+            logger.info(f"Waiting for {active_count} active request(s) to complete...")
+            await asyncio.sleep(wait_interval)
+            elapsed += wait_interval
 
-    if app.state.active_requests:
-        logger.warning(
-            f"Force stopping with {len(app.state.active_requests)} request(s) still active"
-        )
+        if app.state.active_requests:
+            logger.warning(
+                f"Force stopping with {len(app.state.active_requests)} request(s) still active"
+            )
 
-    logger.info("Cleanup complete")
+        logger.info("Cleanup complete")
 
 
 app = FastAPI(

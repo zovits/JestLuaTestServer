@@ -1,6 +1,7 @@
 """API key management for remote worker authentication"""
 
 import logging
+import secrets
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -28,11 +29,15 @@ class APIKeyManager:
             with open(self.keys_file) as f:
                 # Read keys, strip whitespace, ignore empty lines and comments
                 self._keys = {
-                    line.strip() for line in f if line.strip() and not line.strip().startswith("#")
+                    line.strip()
+                    for line in f
+                    if line.strip() and not line.strip().startswith("#")
                 }
 
             if self._keys:
-                logger.info(f"Loaded {len(self._keys)} API key(s) from {self.keys_file}")
+                logger.info(
+                    f"Loaded {len(self._keys)} API key(s) from {self.keys_file}"
+                )
             else:
                 logger.warning(
                     f"No valid API keys found in {self.keys_file}"
@@ -44,8 +49,8 @@ class APIKeyManager:
             self._keys = set()
 
     def is_valid_key(self, api_key: str) -> bool:
-        """Check if an API key is valid"""
-        return api_key in self._keys
+        """Check if an API key is valid using constant-time comparison to prevent timing attacks"""
+        return any(secrets.compare_digest(api_key, key) for key in self._keys)
 
     def get_key_count(self) -> int:
         """Get the number of loaded API keys"""

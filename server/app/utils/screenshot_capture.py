@@ -3,12 +3,15 @@ Screenshot capture utility for Roblox Studio window.
 
 Uses mss for cross-platform screen capture, PIL for image processing,
 and Windows API to find the Studio window.
+
+Note: This module requires Windows for window enumeration and management.
 """
 
 import base64
 import ctypes
 import io
 import logging
+import sys
 from dataclasses import dataclass
 
 import mss
@@ -21,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 # Windows API constants
 SW_RESTORE = 9
-HWND_TOP = 0
-SWP_NOMOVE = 0x0002
-SWP_NOSIZE = 0x0001
 
 
 @dataclass
@@ -279,6 +279,10 @@ def capture_studio_screenshot() -> tuple[str | None, str | None]:
         On success: (screenshot_data, None)
         On failure: (None, error_description)
     """
+    # Platform check - Windows API is required for window enumeration
+    if sys.platform != "win32":
+        return None, "Screenshot capture requires Windows (uses Windows API for window management)"
+
     # Find the Studio window
     hwnd = find_studio_window()
     if hwnd is None:
@@ -316,28 +320,3 @@ def capture_studio_screenshot() -> tuple[str | None, str | None]:
     except Exception as e:
         logger.error(f"Screenshot capture failed: {e}")
         return None, f"Screenshot capture failed: {e}"
-
-
-def capture_full_screen() -> tuple[str | None, str | None]:
-    """
-    Capture a screenshot of the entire primary monitor.
-    Fallback if window-specific capture fails.
-
-    Returns:
-        Tuple of (base64_encoded_png, error_message).
-    """
-    try:
-        with mss.mss() as sct:
-            # Capture primary monitor (index 1, as 0 is "all monitors")
-            monitor = sct.monitors[1]
-            screenshot = sct.grab(monitor)
-
-            # Process: crop and resize
-            b64_screenshot = process_screenshot(screenshot)
-
-            logger.info(f"Captured full screen: {len(b64_screenshot)} bytes (base64)")
-            return b64_screenshot, None
-
-    except Exception as e:
-        logger.error(f"Full screen capture failed: {e}")
-        return None, f"Full screen capture failed: {e}"

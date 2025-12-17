@@ -59,8 +59,15 @@ class ProductionConfig(BaseConfig):
     """Production-specific configuration"""
 
     log_level: str = "INFO"
-    # Restrict CORS in production
-    cors_origins: list[str] = ["http://localhost:*"]
+    # Restrict CORS in production to common localhost ports
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://localhost:8325",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:8325",
+    ]
     # Stricter rate limiting in production
     max_requests_per_minute: int = 300
     # Longer timeouts for production stability
