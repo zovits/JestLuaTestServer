@@ -63,18 +63,22 @@ async def event_generator(
                     # Send delta_apply event with the delta string
                     yield {
                         "event": "delta_apply",
-                        "data": json.dumps({
-                            "request_id": request_id,
-                            "delta": request_data["delta"],
-                        }),
+                        "data": json.dumps(
+                            {
+                                "request_id": request_id,
+                                "delta": request_data["delta"],
+                            }
+                        ),
                     }
                 elif request_type == "reset":
                     # Send reset event
                     yield {
                         "event": "reset",
-                        "data": json.dumps({
-                            "request_id": request_id,
-                        }),
+                        "data": json.dumps(
+                            {
+                                "request_id": request_id,
+                            }
+                        ),
                     }
                 else:
                     logger.warning(f"Unknown request type: {request_type}")

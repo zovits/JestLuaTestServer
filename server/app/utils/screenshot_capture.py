@@ -182,16 +182,22 @@ def crop_to_viewport(image: Image.Image) -> Image.Image:
     bottom = min(height, bottom)
 
     if right <= left or bottom <= top:
-        logger.warning(f"Invalid crop bounds: ({left}, {top}, {right}, {bottom}), returning original")
+        logger.warning(
+            f"Invalid crop bounds: ({left}, {top}, {right}, {bottom}), returning original"
+        )
         return image
 
     cropped = image.crop((left, top, right, bottom))
-    logger.debug(f"Cropped image from {width}x{height} to {cropped.width}x{cropped.height}")
+    logger.debug(
+        f"Cropped image from {width}x{height} to {cropped.width}x{cropped.height}"
+    )
 
     return cropped
 
 
-def resize_image(image: Image.Image, width: int | None, height: int | None) -> Image.Image:
+def resize_image(
+    image: Image.Image, width: int | None, height: int | None
+) -> Image.Image:
     """
     Resize image to specified dimensions.
 
@@ -215,7 +221,9 @@ def resize_image(image: Image.Image, width: int | None, height: int | None) -> I
 
     # Use LANCZOS for high-quality downsampling
     resized = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
-    logger.debug(f"Resized image from {image.width}x{image.height} to {target_width}x{target_height}")
+    logger.debug(
+        f"Resized image from {image.width}x{image.height} to {target_width}x{target_height}"
+    )
 
     return resized
 
@@ -240,9 +248,7 @@ def process_screenshot(raw_screenshot: mss.base.ScreenShot) -> str:
     img = crop_to_viewport(img)
 
     # Resize to configured dimensions
-    img = resize_image(
-        img, app_config.screenshot_width, app_config.screenshot_height
-    )
+    img = resize_image(img, app_config.screenshot_width, app_config.screenshot_height)
 
     # Convert to bytes based on configured format
     buffer = io.BytesIO()
@@ -281,7 +287,10 @@ def capture_studio_screenshot() -> tuple[str | None, str | None]:
     """
     # Platform check - Windows API is required for window enumeration
     if sys.platform != "win32":
-        return None, "Screenshot capture requires Windows (uses Windows API for window management)"
+        return (
+            None,
+            "Screenshot capture requires Windows (uses Windows API for window management)",
+        )
 
     # Find the Studio window
     hwnd = find_studio_window()
@@ -300,7 +309,9 @@ def capture_studio_screenshot() -> tuple[str | None, str | None]:
     if rect.width <= 0 or rect.height <= 0:
         return None, f"Invalid window dimensions: {rect.width}x{rect.height}"
 
-    logger.debug(f"Capturing Studio window at {rect.left},{rect.top} ({rect.width}x{rect.height})")
+    logger.debug(
+        f"Capturing Studio window at {rect.left},{rect.top} ({rect.width}x{rect.height})"
+    )
 
     try:
         with mss.mss() as sct:

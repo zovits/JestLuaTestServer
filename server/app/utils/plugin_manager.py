@@ -71,12 +71,16 @@ class PluginManager:
             for root_key, key_name in registry_keys:
                 try:
                     key = winreg.OpenKey(root_key, r"Software\Roblox\RobloxStudio")
-                    plugin_dir, _ = winreg.QueryValueEx(key, "rbxm_local_plugin_last_directory")
+                    plugin_dir, _ = winreg.QueryValueEx(
+                        key, "rbxm_local_plugin_last_directory"
+                    )
                     winreg.CloseKey(key)
 
                     plugin_dir = Path(plugin_dir)
                     if plugin_dir.exists():
-                        logger.debug(f"Found plugin dir via registry ({key_name}): {plugin_dir}")
+                        logger.debug(
+                            f"Found plugin dir via registry ({key_name}): {plugin_dir}"
+                        )
                         return plugin_dir
                 except (FileNotFoundError, OSError):
                     continue
@@ -127,7 +131,9 @@ class PluginManager:
             )
             return True
         except subprocess.CalledProcessError as e:
-            logger.error(f"Rojo build failed: {e.output if hasattr(e, 'output') else e}")
+            logger.error(
+                f"Rojo build failed: {e.output if hasattr(e, 'output') else e}"
+            )
             return False
         finally:
             # Always clean up config file if it was created
@@ -138,7 +144,9 @@ class PluginManager:
     def _verify_plugin_build(self) -> bool:
         """Verify the built plugin is valid"""
         if not self.plugin_dest.exists():
-            logger.error(f"Plugin build succeeded but output not found at {self.plugin_dest}")
+            logger.error(
+                f"Plugin build succeeded but output not found at {self.plugin_dest}"
+            )
             return False
 
         file_size = self.plugin_dest.stat().st_size
@@ -165,7 +173,9 @@ class PluginManager:
             # Remove existing plugin
             self._remove_existing_plugin()
 
-            logger.info(f"Installing plugin: {self.plugin_source} -> {self.plugin_dest}")
+            logger.info(
+                f"Installing plugin: {self.plugin_source} -> {self.plugin_dest}"
+            )
 
             # Build the plugin
             if not self._build_plugin():
