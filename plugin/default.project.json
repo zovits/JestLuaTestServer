@@ -1,5 +1,5 @@
 {
-    "name": "JestLuaTestServer-Plugin",
+    "name": "RobloxRLGym-Plugin",
     "tree": {
         "$path": "src"
     }

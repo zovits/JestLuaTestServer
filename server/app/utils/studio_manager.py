@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 class StudioManager:
-    """Manages Roblox Studio process lifecycle for running tests"""
+    """Manages Roblox Studio process lifecycle for RL training evaluations"""
 
-    def __init__(self):
+    def __init__(self, place_file: Path):
+        # The place file to open in Studio
+        self.place_file = place_file
+
         # Process management
         self.process: subprocess.Popen | None = None
 
@@ -24,13 +27,9 @@ class StudioManager:
         self.plugin_manager = None  # Set by managed_studio context
         self.fflag_manager = None  # Set by managed_studio context
 
-        # Heartbeat tracking
+        # Heartbeat tracking (for future persistent mode)
         self._last_heartbeat: datetime | None = None
         self._plugin_connections: set = set()
-
-        # Paths
-        self.unit_tests_place_dir = (Path(__file__).parent / "unit_tests_place").resolve()
-        self.built_unit_tests_placefile: Path | None = None
 
         # Studio paths
         self.studio_dir = Path.home() / "AppData" / "Local" / "Roblox Studio"
@@ -51,7 +50,12 @@ class StudioManager:
 
         # Try alternative locations
         alt_paths = [
-            Path.home() / "AppData" / "Local" / "Roblox" / "Versions" / "RobloxStudioBeta.exe",
+            Path.home()
+            / "AppData"
+            / "Local"
+            / "Roblox"
+            / "Versions"
+            / "RobloxStudioBeta.exe",
             Path("C:/Program Files/Roblox/RobloxStudioBeta.exe"),
             Path("C:/Program Files (x86)/Roblox/RobloxStudioBeta.exe"),
         ]
@@ -94,39 +98,12 @@ class StudioManager:
 
         return None
 
-    def _build_placefile(self) -> bool:
-        """Build the test place file using Rojo"""
-        # Install dependencies if needed
-        if not (self.unit_tests_place_dir / "DevPackages").exists():
-            logger.info("Installing Wally dependencies...")
-            try:
-                subprocess.check_output(
-                    ["wally", "install"],
-                    stderr=subprocess.STDOUT,
-                    cwd=self.unit_tests_place_dir,
-                )
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Wally install failed: {e}")
-                return False
-
-        # Build place file
-        try:
-            subprocess.check_output(
-                ["rojo", "build", "-o", "build.rbxl"], cwd=self.unit_tests_place_dir
-            )
-            self.built_unit_tests_placefile = (self.unit_tests_place_dir / "build.rbxl").resolve()
-            logger.info(f"Built place file: {self.built_unit_tests_placefile}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Rojo build failed: {e}")
-            return False
-
     def _clean_lock_file(self) -> None:
         """Remove any stale lock files from previous sessions"""
-        if not self.built_unit_tests_placefile:
+        if not self.place_file:
             return
 
-        lock_file_path = Path(str(self.built_unit_tests_placefile) + ".lock")
+        lock_file_path = Path(str(self.place_file) + ".lock")
         if lock_file_path.exists():
             logger.debug(f"Removing stale lock file: {lock_file_path}")
             try:
@@ -140,7 +117,7 @@ class StudioManager:
         cmd = [
             str(self.studio_path),
             "-localPlaceFile",
-            str(self.built_unit_tests_placefile),
+            str(self.place_file),
         ]
 
         logger.info(f"Starting Roblox Studio: {' '.join(cmd)}")
@@ -166,10 +143,16 @@ class StudioManager:
 
     async def _verify_studio_startup(self) -> bool:
         """Verify that Studio started successfully"""
+        if self.process is None:
+            logger.error("Studio process was not created")
+            return False
+
         # Check immediate startup
         await asyncio.sleep(0.1)
         if self.process.poll() is not None:
-            logger.error(f"Studio process died immediately with return code: {self.process.poll()}")
+            logger.error(
+                f"Studio process died immediately with return code: {self.process.poll()}"
+            )
             stdout, stderr = self.process.communicate()
             if stdout:
                 logger.error(f"STDOUT: {stdout}")
@@ -185,7 +168,7 @@ class StudioManager:
 
         if self.process.poll() is not None:
             logger.error(
-                f"Studio process exited during startup with return code: {self.process.returncode}"
+                f"Studio process exited during startup with code: {self.process.returncode}"
             )
             return False
 
@@ -193,18 +176,18 @@ class StudioManager:
         return True
 
     async def start_studio(self) -> bool:
-        """Start Roblox Studio with the test place file"""
+        """Start Roblox Studio with the configured place file"""
         # Verify Studio is installed
         if not self.studio_path.exists():
             logger.error(f"Roblox Studio not found at: {self.studio_path}")
             return False
 
-        try:
-            # Build place file
-            if not self._build_placefile():
-                logger.error("Failed to build place file")
-                return False
+        # Verify place file exists
+        if not self.place_file.exists():
+            logger.error(f"Place file not found at: {self.place_file}")
+            return False
 
+        try:
             # Clean any stale lock files
             self._clean_lock_file()
 
@@ -221,6 +204,9 @@ class StudioManager:
 
     async def _terminate_studio_process(self) -> None:
         """Attempt graceful termination of Studio process"""
+        if self.process is None:
+            return
+
         if sys.platform == "win32":
             # Windows: Send WM_CLOSE
             try:
@@ -239,6 +225,9 @@ class StudioManager:
 
     async def _force_kill_studio_process(self) -> None:
         """Force kill Studio process"""
+        if self.process is None:
+            return
+
         if sys.platform == "win32":
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
@@ -256,7 +245,9 @@ class StudioManager:
 
         try:
             if skip_graceful:
-                logger.info("Force killing Studio process (skipping graceful shutdown)...")
+                logger.info(
+                    "Force killing Studio process (skipping graceful shutdown)..."
+                )
                 await self._force_kill_studio_process()
 
                 # Wait for force kill
@@ -317,7 +308,9 @@ class StudioManager:
 
                 if poll_result is not None:
                     if poll_result == 0:
-                        logger.info(f"Studio process exited normally after {check_count} seconds")
+                        logger.info(
+                            f"Studio process exited normally after {check_count} seconds"
+                        )
                     else:
                         logger.error(
                             f"Studio process exited with code {poll_result} after {check_count} seconds"
@@ -342,23 +335,37 @@ class StudioManager:
                 self.plugin_manager.is_installed() if self.plugin_manager else False
             ),
             "plugin_connected": len(self._plugin_connections) > 0,
-            "fflags_applied": (self.fflag_manager._applied if self.fflag_manager else False),
-            "placefile_built": self.built_unit_tests_placefile is not None
-            and self.built_unit_tests_placefile.exists(),
+            "fflags_applied": (
+                self.fflag_manager._applied if self.fflag_manager else False
+            ),
+            "place_file_exists": self.place_file is not None
+            and self.place_file.exists(),
         }
 
 
 @asynccontextmanager
-async def managed_studio():
-    """Context manager that ensures Studio is properly started and stopped with FFlags and plugin"""
-    studio_manager = StudioManager()
+async def managed_studio(
+    place_file: Path,
+    plugin_manager=None,
+    fflag_manager=None,
+):
+    """
+    Context manager that ensures Studio is properly started and stopped.
 
-    # Stack context managers: FFlags -> Plugin -> Studio
-    async with (
-        managed_fflags(studio_manager.studio_dir) as fflag_manager,
-        managed_plugin() as plugin_manager,
-    ):
-        # Store references to component managers
+    Args:
+        place_file: Path to the .rbxl place file to open
+        plugin_manager: Optional pre-installed PluginManager to reuse
+        fflag_manager: Optional pre-configured FFlagManager to reuse
+
+    If plugin_manager and fflag_manager are provided, they are reused
+    (useful for caching across multiple Studio instances in a session).
+    If not provided, new ones are created and cleaned up on exit.
+    """
+    studio_manager = StudioManager(place_file)
+
+    # If managers are provided, reuse them; otherwise create and manage lifecycle
+    if plugin_manager is not None and fflag_manager is not None:
+        # Reuse existing managers (no cleanup on exit)
         studio_manager.fflag_manager = fflag_manager
         studio_manager.plugin_manager = plugin_manager
 
@@ -366,7 +373,22 @@ async def managed_studio():
             success = await studio_manager.start_studio()
             if not success:
                 raise RuntimeError("Failed to start Roblox Studio")
-
             yield studio_manager
         finally:
             await studio_manager.stop_studio()
+    else:
+        # Create and manage lifecycle of new managers
+        async with (
+            managed_fflags(studio_manager.studio_dir) as new_fflag_manager,
+            managed_plugin() as new_plugin_manager,
+        ):
+            studio_manager.fflag_manager = new_fflag_manager
+            studio_manager.plugin_manager = new_plugin_manager
+
+            try:
+                success = await studio_manager.start_studio()
+                if not success:
+                    raise RuntimeError("Failed to start Roblox Studio")
+                yield studio_manager
+            finally:
+                await studio_manager.stop_studio()

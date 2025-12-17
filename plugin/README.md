@@ -1,18 +1,18 @@
-# JestLuaTestServer Plugin
+# Roblox RL Gym Plugin
 
-Roblox Studio plugin that executes Jest Lua tests on behalf of the JestLuaTestServer.
+Roblox Studio plugin that applies deltas to the DataModel on behalf of the Roblox RL Gym server.
 
 ## Overview
 
-This plugin runs inside Roblox Studio and acts as the test execution engine for the JestLuaTestServer system. It receives test files via Server-Sent Events (SSE), deserializes them, executes the tests using Jest Lua, and reports results back to the server.
+This plugin runs inside Roblox Studio and acts as the delta application engine for the Roblox RL Gym system. It receives delta strings via Server-Sent Events (SSE), applies them using `DataModelDeltaService:ApplyDelta()`, and reports results back to the server.
 
 ## Architecture
 
 The plugin consists of these main components:
 
 1. **Main.server.lua**: Entry point that handles plugin initialization
-2. **TestsManager/**: Core test execution module
-   - **init.lua**: Main test execution manager that handles SSE communication, test deserialization, and result reporting
+2. **DeltaManager/**: Core delta application module
+   - **init.lua**: Main delta manager that handles SSE communication, delta application, and result reporting
    - **Logger.lua**: Logging utility for debug output
 
 ## How It Works
@@ -21,25 +21,24 @@ The plugin consists of these main components:
 When the plugin starts, it:
 - Waits for the server to be healthy by polling `/health`
 - Establishes an SSE connection to `/_events` endpoint with session token authentication
-- Begins listening for test execution requests
+- Begins listening for delta application and reset requests
 
-### 2. Test Reception
-Tests are received in chunks via SSE:
-- `test_start`: Initializes buffer for incoming test data
-- `test_chunk`: Receives binary chunks of the `.rbxm` file
-- `test_end`: Triggers test deserialization and execution
+### 2. Delta Application
+Deltas are received via SSE:
+- `delta_apply`: Receives a delta string to apply
+- Plugin calls `DataModelDeltaService:ApplyDelta(delta)`
+- Reports success/failure back to the server
 
-### 3. Test Execution
-When a complete test is received:
-- Deserializes the `.rbxm` file using `SerializationService`
-- Injects a default `jest.config` if not present
-- Runs the tests using Jest Lua with configured options
-- Captures test results or errors
+### 3. Reset
+Reset requests are received via SSE:
+- `reset`: Triggers experience reset
+- Plugin clears dynamic content from workspace and services
+- Reports completion back to the server
 
 ### 4. Result Reporting
-After test execution:
-- Sends results back to server via POST to `/_results` with session token authentication
-- Includes test ID and outcome (success/failure with details)
+After processing a request:
+- Sends results back to server via POST to `/_delta_result` with session token authentication
+- Includes request ID and outcome (success/failure with error message)
 
 ## Configuration
 
@@ -47,28 +46,8 @@ The plugin reads its configuration from `serverConfig.json`, which is automatica
 
 - `host`: Server hostname (default: `127.0.0.1`)
 - `port`: Server port (default: `8325`)
-- `test_timeout`: Maximum test execution time in milliseconds
 - `log_level`: The verbosity of logging
 - `bearer_token`: Session-specific authentication token (automatically injected)
-
-## Jest Configuration
-
-Default Jest options used by the plugin:
-
-```lua
-{
-    verbose = false,
-    ci = true,
-    testTimeout = <from serverConfig>,
-    testMatch = {
-        "**/*.(spec|test)",
-    },
-    testPathIgnorePatterns = {
-        "Packages",
-        "DevPackages",
-    }
-}
-```
 
 ## Installation
 
@@ -95,8 +74,8 @@ rojo build -o plugin.rbxm
 plugin/
 ├── src/
 │   ├── Main.server.lua      # Plugin entry point
-│   ├── TestsManager/        # Test execution module
-│   │   ├── init.lua         # Main test manager
+│   ├── DeltaManager/        # Delta application module
+│   │   ├── init.lua         # Main delta manager
 │   │   └── Logger.lua       # Logging utility
 │   └── serverConfig.json    # Server configuration (auto-generated)
 ├── default.project.json     # Rojo project configuration
@@ -105,27 +84,31 @@ plugin/
 
 ## API
 
-### TestsManager Module
+### DeltaManager Module
 
 #### Methods
 
-##### `TestsManager:start()`
+##### `DeltaManager:start()`
 Initializes the plugin and establishes server connection.
 
-##### `TestsManager:runTest(testId: string)`
-Executes a test and returns results.
+##### `DeltaManager:applyDelta(requestId: string, delta: string)`
+Applies a delta string to the DataModel.
 
 Returns:
-- `{ success: true, results: JestResults }` on success
+- `{ success: true }` on success
 - `{ success: false, error: string }` on failure
 
-##### `TestsManager:deserializeTest(testId: string)`
-Deserializes a buffered `.rbxm` file into Roblox instances.
+##### `DeltaManager:resetExperience(requestId: string)`
+Resets the experience to its initial state by clearing dynamic content.
 
-##### `TestsManager:reportTestOutcome(testId: string, outcome: table)`
-Sends test results back to the server.
+Returns:
+- `{ success: true }` on success
+- `{ success: false, error: string }` on failure
 
-##### `TestsManager:handleSSEMessage(message: string)`
+##### `DeltaManager:reportOutcome(requestId: string, eventType: string, outcome: table)`
+Sends results back to the server.
+
+##### `DeltaManager:handleSSEMessage(message: string)`
 Processes incoming SSE messages from the server.
 
 ## Error Handling
@@ -133,27 +116,13 @@ Processes incoming SSE messages from the server.
 The plugin includes comprehensive error handling:
 
 - Network failures are logged but don't crash the plugin
-- Test timeouts are enforced and reported
-- Deserialization errors are caught and reported
-- Jest execution errors are captured and sent to server
+- Delta application errors are caught and reported
+- Reset errors are captured and sent to server
 
 ## Debugging
 
-Enable verbose logging by modifying the Jest options:
-
-```lua
-local runCLIOptions = {
-    verbose = true,  -- Change to true for detailed output
-    -- ... other options
-}
-```
-
-Check the Studio output window for plugin logs and error messages.
-
-## Known Issues
-
-1. **Test Isolation**: Tests run in the same environment, so global state changes may affect subsequent tests
+Check the Studio output window for plugin logs and error messages. Set `log_level` to `DEBUG` or `TRACE` for more verbose output.
 
 ## License
 
-This plugin is part of the JestLuaTestServer project and is licensed under the Apache License 2.0.
+This plugin is part of the Roblox RL Gym project and is licensed under the Apache License 2.0.

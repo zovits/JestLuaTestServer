@@ -1,2 +1,2 @@
-local TestsManager = require(script.Parent.TestsManager)
-TestsManager.init()
+local DeltaManager = require(script.Parent.DeltaManager)
+DeltaManager.init()

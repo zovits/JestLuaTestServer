@@ -1,43 +1,45 @@
-# JestLuaTestServer
+# Roblox RL Gym
 
-A high-performance test runner for Jest Lua tests in Roblox Studio. Unlike traditional approaches like `run-in-roblox` that require Studio to open and close for each test run, JestLuaTestServer maintains a persistent Studio session that executes tests on-demand via HTTP, dramatically improving test execution speed in situations with repeated runs.
+A reinforcement learning environment for training models to edit Roblox experiences. The system receives delta strings from an external model, applies them to the DataModel via `DataModelDeltaService:ApplyDelta()`, and captures before/after screenshots for reward model training.
 
 ## Overview
 
-JestLuaTestServer consists of three main components:
+Roblox RL Gym consists of three main components:
 
-1. **Python Server**: A FastAPI-based server that manages Roblox Studio instances and coordinates test execution
-2. **Roblox Studio Plugin**: A Lua plugin that runs inside Studio to execute Jest tests and report results
-3. **Test Place**: A pre-configured Roblox place file with Jest and all dependencies installed
+1. **Python Server**: A FastAPI-based server that manages Roblox Studio instances and coordinates delta application
+2. **Roblox Studio Plugin**: A Lua plugin that runs inside Studio to apply deltas and report results
+3. **Screenshot Capture**: Windows API-based screen capture for observing the experience state
 
-The system uses Server-Sent Events (SSE) for real-time communication between the server and plugin, allowing for efficient test execution without the overhead of repeatedly launching Studio or long polling.
+The system uses Server-Sent Events (SSE) for real-time communication between the server and plugin.
 
 ## Features
 
-- **Fast Test Execution**: Persistent Studio session eliminates startup/shutdown overhead
-- **Simple API**: Submit tests via HTTP POST with `.rbxm` files
-- **Real-time Communication**: SSE-based architecture for instant test feedback
+- **Delta Evaluation**: Evaluate multiple deltas against a place file with before/after screenshots
+- **Screenshot Capture**: Capture the Studio viewport state for reward model training
+- **Configurable Output**: PNG or JPEG format with adjustable quality
+- **Real-time Communication**: SSE-based architecture for instant feedback
 - **Automatic Setup**: Server handles plugin installation and Studio configuration
-- **Jest Integration**: Full Jest test runner with all standard features
-- **Configurable Timeouts**: Customizable test execution timeouts
 - **Secure Authentication**: Dual authentication system for remote workers and plugin
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    CLIENT[Client] -->|POST /test| SERVER[Server]
-    SERVER -->|SSE /_events| STUDIO[Studio Plugin]
-    STUDIO -->|POST /_results| SERVER
-    SERVER -->|JSON results| CLIENT
+    MODEL[RL Training] -->|"POST /evaluate (place + deltas)"| SERVER[Python Server]
+    SERVER -->|Start Studio| STUDIO[Roblox Studio]
+    SERVER -->|SSE delta_apply| PLUGIN[Studio Plugin]
+    PLUGIN -->|ApplyDelta| DMS[DataModelDeltaService]
+    PLUGIN -->|POST /_delta_result| SERVER
+    SERVER -->|Windows API| SCREENSHOT[Screenshot Capture]
+    SERVER -->|"before + after[]"| MODEL
 ```
 
 ## Security & Authentication
 
-JestLuaTestServer uses a dual authentication system:
+Roblox RL Gym uses a dual authentication system:
 
-1. **API Keys** for remote workers to access the `/test` endpoint
-2. **Session Tokens** for the plugin to access internal endpoints (`/_events`, `/_results`)
+1. **API Keys** for remote workers to access the `/evaluate` endpoint
+2. **Session Tokens** for the plugin to access internal endpoints (`/_events`, `/_delta_result`)
 
 See [AUTHENTICATION.md](AUTHENTICATION.md) for detailed setup instructions.
 
@@ -48,15 +50,14 @@ See [AUTHENTICATION.md](AUTHENTICATION.md) for detailed setup instructions.
 - Python 3.11+
 - Roblox Studio
 - [Rojo](https://rojo.space/) (for building Roblox files)
-- [Wally](https://wally.run/) (for Roblox package management)
 - [UV](https://github.com/astral-sh/uv) (Python package manager)
 
 ### Setup
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/JestLuaTestServer.git
-   cd JestLuaTestServer
+   git clone https://github.com/yourusername/RobloxRLGym.git
+   cd RobloxRLGym
    ```
 
 2. **Install Python dependencies**:
@@ -86,10 +87,8 @@ uv run python run.py
 The server will:
 1. Configure required Studio FFlags
 2. Install the Roblox Studio plugin with session token
-3. Build the test place with Jest dependencies
-4. Launch Roblox Studio
-5. Load API keys from `api_keys.txt` (if authentication is enabled)
-6. Listen for test requests on the configured port
+3. Load API keys from `api_keys.txt` (if authentication is enabled)
+4. Listen for requests on the configured port
 
 ### Setting Up Authentication
 
@@ -104,133 +103,140 @@ The server will:
    python -c "import secrets; print(secrets.token_urlsafe(32))"
    ```
 
-### Running Tests
+### Evaluating Deltas
 
-Submit tests by sending a POST request to `/test` with a `.rbxm` file and API key:
+Submit a place file and list of deltas to evaluate:
 
 ```python
 import requests
+import json
 
-with open("tests.rbxm", "rb") as f:
-    response = requests.post(
-        "http://localhost:8325/test",
-        data=f.read(),
-        headers={
-            "Content-Type": "application/octet-stream",
-            "X-API-Key": "your-api-key-here"
-        }
-    )
-    
-print(response.json())
-```
+# Prepare the request
+with open("my_place.rbxl", "rb") as f:
+    place_data = f.read()
 
-The `.rbxm` file should contain a Folder with your `.spec.lua`/`.test.lua` files and an optional `jest.config`.
+deltas = [
+    "delta-string-1",
+    "delta-string-2",
+    "delta-string-3",
+]
 
-```
-[Folder] MyTestsModel
-├── [ModuleScript] foo.spec              # Jest test modules
-├── [ModuleScript] bar.spec
-│   └── [Folder] SomeNestedTests         # Supports nesting
-│       └── [ModuleScript] bar.spec
-├── [Folder] Utils                       # You can include non-test modules to use within your tests
-│       └── [ModuleScript] someUtil
-└── [ModuleScript] jest.config           # Optional. Default config matches "**/*.(spec|test)" and ignores Packages & DevPackages. (https://jsdotlua.github.io/jest-lua/configuration)
-```
+response = requests.post(
+    "http://localhost:8325/evaluate",
+    files={"place_file": ("place.rbxl", place_data)},
+    data={"deltas": json.dumps(deltas)},
+    headers={"X-API-Key": "your-api-key-here"},
+)
 
-### Test File Structure
+result = response.json()
+print(f"Success: {result['success']}")
+print(f"Before screenshot: {result['before_screenshot'][:50]}...")
 
-Your test files should follow standard Jest conventions, requiring from `ReplicatedStorage.DevPackages`:
-
-```lua
--- Sum.spec.lua
-local JestGlobals = require(game:GetService("ReplicatedStorage").DevPackages.JestGlobals)
-
-local describe = JestGlobals.describe
-local it = JestGlobals.it
-local expect = JestGlobals.expect
-
-local function sum(a: number, b: number): number
-	return a + b
-end
-
-describe("sum", function()
-    it("should add two positives", function()
-		expect(sum(1, 1)).toEqual(2)
-	end)
-	it("should add a positive and a negative", function()
-		expect(sum(1, -1)).toEqual(0)
-	end)
-end)
+for delta_result in result['results']:
+    print(f"Delta {delta_result['delta_index']}: {delta_result['success']}")
+    if delta_result['after_screenshot']:
+        print(f"  After screenshot: {delta_result['after_screenshot'][:50]}...")
 ```
 
 ## API Reference
 
 ### Endpoints
 
-#### `POST /test`
-Execute Jest tests from an uploaded `.rbxm` file.
+#### `POST /evaluate`
+Evaluate a list of deltas against a place file. Captures a single "before" screenshot (baseline) and an "after" screenshot for each delta.
 
-**Request:**
-- Body: Binary `.rbxm` data
-- Headers:
-  - `Content-Type: application/octet-stream`
-  - `X-API-Key: your-api-key` (required if authentication is enabled)
+**Request (multipart/form-data):**
+- `place_file`: The `.rbxl` place file
+- `deltas`: JSON array of delta strings
+
+**Headers:**
+- `X-API-Key: your-api-key` (required if authentication is enabled)
 
 **Response:**
 ```json
 {
-  "test_id": "uuid-string",
-  "status": "completed|timeout|error",
-  "results": {
-    // Jest test results object
-  },
-  "error": "error message if failed"
+  "request_id": "uuid-string",
+  "success": true,
+  "error": null,
+  "before_screenshot": "base64-encoded-image...",
+  "results": [
+    {
+      "delta_index": 0,
+      "success": true,
+      "error": null,
+      "after_screenshot": "base64-encoded-image..."
+    },
+    {
+      "delta_index": 1,
+      "success": false,
+      "error": "Delta application failed: ...",
+      "after_screenshot": null
+    }
+  ],
+  "timestamp": "2025-12-16T..."
 }
 ```
 
 #### `GET /health`
-Check server and Studio status.
+Check server status.
 
-**Response:**
+**Response (no active evaluation):**
 ```json
 {
   "status": "healthy",
+  "studio_active": false
+}
+```
+
+**Response (during evaluation):**
+```json
+{
+  "status": "healthy",
+  "studio_active": true,
   "studio_running": true,
   "plugin_installed": true,
+  "plugin_connected": true,
   "fflags_applied": true,
-  "placefile_built": true
+  "place_file_exists": true
 }
 ```
 
 #### `GET /_events` (Internal)
 Server-Sent Events endpoint for plugin communication.
 
-#### `POST /_results` (Internal)
-Endpoint for plugin to submit test results.
+#### `POST /_delta_result` (Internal)
+Endpoint for plugin to submit delta application results.
+
+#### `POST /_heartbeat` (Internal)
+Endpoint for plugin to send heartbeat signals.
 
 ## Configuration
 
 ### Environment Variables
 
-All environment variables should be prefixed with `JEST_TEST_SERVER_`:
+All environment variables should be prefixed with `ROBLOX_RL_GYM_`:
 
-- `JEST_TEST_SERVER_HOST`: Server host (default: `127.0.0.1`)
-- `JEST_TEST_SERVER_PORT`: Server port (default: `8325`)
-- `JEST_TEST_SERVER_TEST_TIMEOUT`: Test execution timeout in seconds (default: `30`)
-- `JEST_TEST_SERVER_SHUTDOWN_TIMEOUT`: Graceful shutdown timeout in seconds (default: `10`)
-- `JEST_TEST_SERVER_LOG_LEVEL`: Logging level (default: `INFO`)
-- `JEST_TEST_SERVER_CHUNK_SIZE`: SSE chunk size for rbxm transfer (default: `8192`)
-- `JEST_TEST_SERVER_CORS_ORIGINS`: Allowed CORS origins as JSON array (default: `["*"]`)
-
-### Studio FFlags
-
-The server automatically configures these Studio FFlags:
-- `FFlagEnableLoadModule`: Enables module loading for Jest
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HOST` | `127.0.0.1` | Server bind address |
+| `PORT` | `8325` | Server port |
+| `STEP_TIMEOUT` | `30` | Delta application timeout (seconds) |
+| `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout (seconds) |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `ENABLE_AUTH` | `true` | Enable authentication |
+| `SCREENSHOT_WIDTH` | `512` | Output screenshot width (pixels) |
+| `SCREENSHOT_HEIGHT` | `512` | Output screenshot height (pixels) |
+| `SCREENSHOT_FORMAT` | `png` | Image format: `png` or `jpeg` |
+| `SCREENSHOT_JPEG_QUALITY` | `85` | JPEG quality (1-100) |
+| `SCREENSHOT_CROP_LEFT` | `0.15` | Viewport crop from left |
+| `SCREENSHOT_CROP_RIGHT` | `0.20` | Viewport crop from right |
+| `SCREENSHOT_CROP_TOP` | `0.08` | Viewport crop from top |
+| `SCREENSHOT_CROP_BOTTOM` | `0.15` | Viewport crop from bottom |
 
 ## Project Structure
 
 ```
-JestLuaTestServer/
+RobloxRLGym/
 ├── server/                         # Python server application
 │   ├── app/
 │   │   ├── main.py                 # FastAPI application
@@ -239,9 +245,13 @@ JestLuaTestServer/
 │   │   ├── auth.py                 # Authentication middleware
 │   │   ├── api_keys.py             # API key management
 │   │   ├── endpoints/              # API endpoints
+│   │   │   ├── evaluate.py         # /evaluate endpoint
+│   │   │   ├── events.py           # SSE events for plugin
+│   │   │   └── delta_results.py    # Plugin result reporting
 │   │   └── utils/                  # Utility modules
-│   │       ├── fflag_manager.py    # FFlag management
+│   │       ├── screenshot_capture.py  # Windows screenshot capture
 │   │       ├── plugin_manager.py   # Plugin management
+│   │       ├── fflag_manager.py    # FFlag management
 │   │       └── studio_manager.py   # Studio management
 │   ├── api_keys.txt                # API keys file (gitignored)
 │   ├── api_keys.txt.example        # Example API keys file
@@ -250,8 +260,8 @@ JestLuaTestServer/
 ├── plugin/                         # Roblox Studio plugin
 │   ├── src/
 │   │   ├── Main.server.lua         # Plugin entry point
-│   │   └── TestsManager/           # Test execution module
-│   │       ├── init.lua            # Main test manager
+│   │   └── DeltaManager/           # Delta application module
+│   │       ├── init.lua            # Main delta manager
 │   │       └── Logger.lua          # Logging utility
 │   └── default.project.json        # Rojo project configuration
 ├── AUTHENTICATION.md               # Authentication documentation
@@ -266,9 +276,3 @@ This project is licensed under the Apache License 2.0. See the LICENSE file for 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
-
-## Acknowledgments
-
-- [Jest Lua](https://github.com/jsdotlua/jest-lua) for the Jest testing framework port
-- [Rojo](https://rojo.space/) for Roblox project management
-- [FastAPI](https://fastapi.tiangolo.com/) for the Python web framework

@@ -11,43 +11,44 @@ def get_studio_manager(request: Request) -> StudioManager:
     """Get StudioManager instance from app state"""
     if not hasattr(request.app.state, "studio_manager"):
         raise RuntimeError("StudioManager not initialized")
+    if request.app.state.studio_manager is None:
+        raise RuntimeError("StudioManager not currently active")
     return request.app.state.studio_manager
 
 
-def get_test_queue(request: Request):
-    """Get test queue from app state"""
-    if not hasattr(request.app.state, "test_queue"):
-        raise RuntimeError("Test queue not initialized")
-    return request.app.state.test_queue
+def get_request_queue(request: Request):
+    """Get request queue from app state"""
+    if not hasattr(request.app.state, "request_queue"):
+        raise RuntimeError("Request queue not initialized")
+    return request.app.state.request_queue
 
 
-def get_active_tests(request: Request) -> dict:
-    """Get active tests dict from app state"""
-    if not hasattr(request.app.state, "active_tests"):
-        raise RuntimeError("Active tests not initialized")
-    return request.app.state.active_tests
+def get_active_requests(request: Request) -> dict:
+    """Get active requests dict from app state"""
+    if not hasattr(request.app.state, "active_requests"):
+        raise RuntimeError("Active requests not initialized")
+    return request.app.state.active_requests
 
 
 def get_rate_limiter(request: Request) -> dict:
     """Get rate limiter dict from app state"""
     if not hasattr(request.app.state, "rate_limiter"):
-        # Return empty defaultdict for tests
         from collections import defaultdict
 
         return defaultdict(list)
     return request.app.state.rate_limiter
 
 
-def get_accepting_tests(request: Request) -> bool:
-    """Check if server is accepting new tests"""
-    if not hasattr(request.app.state, "accepting_tests"):
+def get_accepting_requests(request: Request) -> bool:
+    """Check if server is accepting new requests"""
+    if not hasattr(request.app.state, "accepting_requests"):
         return False
-    return request.app.state.accepting_tests
+    return request.app.state.accepting_requests
 
 
 # Type annotations for dependency injection
 StudioManagerDep = Annotated[StudioManager, Depends(get_studio_manager)]
-TestQueueDep = Annotated[object, Depends(get_test_queue)]
-ActiveTestsDep = Annotated[dict, Depends(get_active_tests)]
+RequestQueueDep = Annotated[object, Depends(get_request_queue)]
+ActiveRequestsDep = Annotated[dict, Depends(get_active_requests)]
 RateLimiterDep = Annotated[dict, Depends(get_rate_limiter)]
-AcceptingTestsDep = Annotated[bool, Depends(get_accepting_tests)]
+AcceptingRequestsDep = Annotated[bool, Depends(get_accepting_requests)]

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class PluginManager:
     """Manages Roblox Studio plugin installation and lifecycle"""
 
-    PLUGIN_NAME = "JestLuaTestServer.rbxm"
+    PLUGIN_NAME = "RobloxRLGym.rbxm"
     CONFIG_FILE_NAME = "serverConfig.json"
     MIN_PLUGIN_SIZE = 1024  # Minimum expected plugin size in bytes
 

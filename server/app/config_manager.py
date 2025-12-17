@@ -12,6 +12,8 @@ class BaseConfig(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8325
     test_timeout: int = 16
+    step_timeout: int = 30
+    reset_timeout: int = 30
     chunk_size: int = 8192
     log_level: str = "INFO"
 
@@ -28,8 +30,18 @@ class BaseConfig(BaseSettings):
     # CORS settings
     cors_origins: list[str] = ["*"]
 
+    # Screenshot settings
+    screenshot_width: int | None = 512
+    screenshot_height: int | None = 512
+    screenshot_crop_left: float = 0.15
+    screenshot_crop_right: float = 0.20
+    screenshot_crop_top: float = 0.08
+    screenshot_crop_bottom: float = 0.15
+    screenshot_format: str = "png"  # "png" or "jpeg"
+    screenshot_jpeg_quality: int = 85  # 1-100, only used when format is "jpeg"
+
     class Config:
-        env_prefix = "JEST_TEST_SERVER_"
+        env_prefix = "ROBLOX_RL_GYM_"
         case_sensitive = False
 
 
@@ -74,7 +86,7 @@ def get_config(
 ) -> BaseConfig:
     """Get configuration based on environment"""
     if env is None:
-        env = os.getenv("JEST_TEST_SERVER_ENV", "development").lower()
+        env = os.getenv("ROBLOX_RL_GYM_ENV", "development").lower()
 
     configs = {
         "development": DevelopmentConfig,

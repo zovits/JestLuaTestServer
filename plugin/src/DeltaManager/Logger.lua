@@ -92,3 +92,4 @@ function Logger.critical(self: Logger, ...: any)
 end
 
 return Logger
+

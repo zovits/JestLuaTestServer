@@ -1,36 +1,24 @@
 --!strict
 local HttpService = game:GetService("HttpService")
-local SerializationService = game:GetService("SerializationService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local DevPackages = ReplicatedStorage:WaitForChild("DevPackages")
-local Jest = require(DevPackages:WaitForChild("Jest", math.huge))
+local DataModelDeltaService = game:GetService("DataModelDeltaService")
 
 local logger = require(script:FindFirstChild("Logger")).new()
 
-local runCLIOptions = {
-	verbose = false,
-	ci = true,
-	-- json=true,
-	testTimeout = 10 * 1000,
-}
-
-type TestId = string
-type Ok<T> = { success: true, results: T }
+type RequestId = string
+type Ok<T> = { success: true, result: T? }
 type Err<E> = { success: false, error: E }
 type Outcome<T, E> = Ok<T> | Err<E>
 type ServerConfig = {
 	host: string,
 	port: number,
-	test_timeout: number,
 	log_level: string,
 	bearer_token: string?,
 }
 
-local TestsManager = {}
-TestsManager.__index = TestsManager
+local DeltaManager = {}
+DeltaManager.__index = DeltaManager
 
-type TestsManagerData = {
+type DeltaManagerData = {
 	serverConfig: ServerConfig,
 	serverUrl: string,
 
@@ -43,29 +31,22 @@ type TestsManagerData = {
 
 	heartbeatTask: thread?,
 
-	testRbxmBuffers: { [TestId]: buffer },
-	testRbxmBufferOffsets: { [TestId]: number },
+	-- Store initial state for reset functionality
+	initialPlaceId: number?,
 }
 
-export type TestsManager = typeof(setmetatable({} :: TestsManagerData, TestsManager))
--- or alternatively, in the new type solver...
--- export type TestsManager = setmetatable<TestsManagerData, typeof(TestsManager)>
+export type DeltaManager = typeof(setmetatable({} :: DeltaManagerData, DeltaManager))
 
-function TestsManager.init(): TestsManager
+function DeltaManager.init(): DeltaManager
 	local serverConfigModule = (script.Parent :: Instance):FindFirstChild("serverConfig")
 	if not serverConfigModule then
 		logger:fatal(
-			"serverConfig module not found. Please ensure it is present in the same directory as TestsManager."
+			"serverConfig module not found. Please ensure it is present in the same directory as DeltaManager."
 		)
 	end
 
 	local serverConfig = require(serverConfigModule)
 	logger:setLevel(serverConfig.log_level)
-	-- Subtracting 1 second to account for overhead cost. The server total timeout is N,
-	-- the plugin has to receive the test, deserialize it, run it, and report the results.
-	-- We want Jest to timeout the test before the server does, so we subtract 1 second.
-	-- We can adjust this later if needed.
-	runCLIOptions.testTimeout = serverConfig.test_timeout * 1000 - 1000
 
 	local self = setmetatable({
 		serverConfig = serverConfig,
@@ -77,13 +58,12 @@ function TestsManager.init(): TestsManager
 		maxReconnectDelay = 30,
 		sseClientConnections = {},
 		heartbeatTask = nil,
-		testRbxmBuffers = {},
-		testRbxmBufferOffsets = {},
-	}, TestsManager) :: TestsManager
+		initialPlaceId = game.PlaceId,
+	}, DeltaManager) :: DeltaManager
 
 	self:start()
 
-	-- We can toggle the boolean value to manually disconnect during development or debugging
+	-- Kill switch for development/debugging
 	local KillSwitch = workspace:FindFirstChild("KillSwitch")
 	if KillSwitch then
 		KillSwitch.Changed:Connect(function()
@@ -94,104 +74,116 @@ function TestsManager.init(): TestsManager
 	return self
 end
 
-function TestsManager._runTestUnsafe(self: TestsManager, testId: TestId): Outcome<any, string>
-	local test = self:deserializeTest(testId)
-	test.Parent = workspace
+function DeltaManager.applyDelta(self: DeltaManager, requestId: RequestId, delta: string): Outcome<nil, string>
+	logger:info(`Applying delta for request {requestId}...`)
 
-	logger:info(`Sending {testId} to Jest for execution...`)
-	local status, jestResult = Jest.runCLI(script, runCLIOptions, { test }):awaitStatus()
+	local success, errorMessage = pcall(function()
+		DataModelDeltaService:ApplyDelta(delta)
+	end)
 
-	test:Destroy()
-
-	if status == "Rejected" then
+	if not success then
+		logger:warn(`Delta application failed for {requestId}:`, errorMessage)
 		return {
 			success = false,
-			error = tostring(jestResult),
+			error = tostring(errorMessage),
 		}
 	end
 
+	logger:info(`Delta applied successfully for request {requestId}`)
 	return {
 		success = true,
-		results = jestResult.results,
+		result = nil,
 	}
 end
 
-function TestsManager.runTest(self: TestsManager, testId: TestId): Outcome<any, string>
-	local runSuccess, runResult = pcall(function()
-		return self:_runTestUnsafe(testId)
+function DeltaManager.resetExperience(self: DeltaManager, requestId: RequestId): Outcome<nil, string>
+	logger:info(`Resetting experience for request {requestId}...`)
+
+	-- Reload the place to reset to initial state
+	-- This triggers the server to reload Studio with the original place file
+	local success, errorMessage = pcall(function()
+		-- Clear any dynamic content in workspace (except camera and terrain)
+		for _, child in workspace:GetChildren() do
+			if child:IsA("Camera") or child:IsA("Terrain") then
+				continue
+			end
+			-- Skip the kill switch if it exists
+			if child.Name == "KillSwitch" then
+				continue
+			end
+			child:Destroy()
+		end
+
+		-- Clear other common containers that might have dynamic content
+		local containers = {
+			game:GetService("ReplicatedStorage"),
+			game:GetService("ServerStorage"),
+			game:GetService("ServerScriptService"),
+		}
+
+		for _, container in containers do
+			for _, child in container:GetChildren() do
+				-- Don't destroy DevPackages or Packages (dependencies)
+				if child.Name == "DevPackages" or child.Name == "Packages" then
+					continue
+				end
+				child:Destroy()
+			end
+		end
 	end)
 
-	if not runSuccess then
+	if not success then
+		logger:warn(`Reset failed for {requestId}:`, errorMessage)
 		return {
 			success = false,
-			error = "Failed to run test: " .. tostring(runResult),
+			error = tostring(errorMessage),
 		}
 	end
 
-	return runResult
+	logger:info(`Experience reset successfully for request {requestId}`)
+	return {
+		success = true,
+		result = nil,
+	}
 end
 
-function TestsManager.deserializeTest(self: TestsManager, testId: string): Instance
-	local buf = self.testRbxmBuffers[testId]
-	assert(buf, "No buffer found for testId: " .. testId)
-
-	local instances = SerializationService:DeserializeInstancesAsync(buf)
-	assert(#instances == 1, "Expected exactly one root instance in the rbxm")
-	local test = instances[1]
-
-	if not test:FindFirstChild("jest.config") then
-		local config = Instance.new("ModuleScript")
-		config.Name = "jest.config"
-		config.Source = [[
-		return {	
-			testMatch = {
-				"**/*.(spec|test)",
-			},
-			testPathIgnorePatterns = {
-				"Packages",
-				"DevPackages",
-			}
-		}
-		]]
-		config.Parent = test
-	end
-
-	logger:debug(`Deserialized test {testId}`, test)
-
-	return test
-end
-
-function TestsManager.reportTestOutcome(self: TestsManager, testId: TestId, outcome: Outcome<any, string>): boolean
+function DeltaManager.reportOutcome(
+	self: DeltaManager,
+	requestId: RequestId,
+	eventType: string,
+	outcome: Outcome<nil, string>
+): boolean
 	if outcome.success then
-		logger:info(`Test {testId} completed successfully:`, outcome.results)
+		logger:info(`{eventType} {requestId} completed successfully`)
 	else
-		logger:warn(`Test {testId} failed:`, outcome.error)
+		logger:warn(`{eventType} {requestId} failed:`, outcome.error)
 	end
 
 	local success, response = pcall(HttpService.RequestAsync, HttpService, {
-		Url = `{self.serverUrl}/_results`,
+		Url = `{self.serverUrl}/_delta_result`,
 		Method = "POST" :: "POST",
 		Headers = {
 			["Content-Type"] = "application/json",
 			["Authorization"] = `Bearer {self.serverConfig.bearer_token}`,
 		},
 		Body = HttpService:JSONEncode({
-			test_id = testId,
-			outcome = outcome,
+			request_id = requestId,
+			success = outcome.success,
+			error = if outcome.success then nil else outcome.error,
 		}),
 		Compress = Enum.HttpCompression.None,
 	})
 
 	if not success then
-		logger:warn("Failed to report test outcome:", response)
+		logger:warn("Failed to report outcome:", response)
 		return false
 	end
 
-	logger:info("Reported test outcome for", testId)
+	logger:info("Reported outcome for", requestId)
 	return true
 end
 
-function TestsManager.sendHeartbeat(self: TestsManager): boolean
+function DeltaManager.sendHeartbeat(self: DeltaManager): boolean
 	local success, response = pcall(HttpService.RequestAsync, HttpService, {
 		Url = `{self.serverUrl}/_heartbeat`,
 		Method = "POST" :: "POST",
@@ -212,21 +204,21 @@ function TestsManager.sendHeartbeat(self: TestsManager): boolean
 	return true
 end
 
-function TestsManager.startHeartbeat(self: TestsManager)
+function DeltaManager.startHeartbeat(self: DeltaManager)
 	if self.heartbeatTask then
-		return -- Already running
+		return
 	end
 
 	self.heartbeatTask = task.spawn(function()
 		while self.active do
 			self:sendHeartbeat()
-			task.wait(1) -- Send heartbeat every second
+			task.wait(1)
 		end
 	end)
 	logger:debug("Started heartbeat task")
 end
 
-function TestsManager.stopHeartbeat(self: TestsManager)
+function DeltaManager.stopHeartbeat(self: DeltaManager)
 	if self.heartbeatTask then
 		task.cancel(self.heartbeatTask)
 		self.heartbeatTask = nil
@@ -234,7 +226,7 @@ function TestsManager.stopHeartbeat(self: TestsManager)
 	end
 end
 
-function TestsManager.awaitHealthyServer(self: TestsManager)
+function DeltaManager.awaitHealthyServer(self: DeltaManager)
 	local maxDelay = 30
 	local attempts = 0
 	local baseDelay = 0.5
@@ -264,7 +256,7 @@ function TestsManager.awaitHealthyServer(self: TestsManager)
 	end
 end
 
-function TestsManager.reconnectWithBackoff(self: TestsManager)
+function DeltaManager.reconnectWithBackoff(self: DeltaManager)
 	self.reconnectAttempts += 1
 
 	if self.reconnectAttempts > self.maxReconnectAttempts then
@@ -291,11 +283,9 @@ function TestsManager.reconnectWithBackoff(self: TestsManager)
 	if self.active then
 		local sseClient = self:connectSSEClient()
 		if sseClient then
-			-- Reset reconnect attempts on successful connection
 			logger:info("SSE connection restored after", self.reconnectAttempts, "attempts")
 			self.reconnectAttempts = 0
 		else
-			-- Failed to connect, will retry
 			self:reconnectWithBackoff()
 		end
 	else
@@ -303,7 +293,7 @@ function TestsManager.reconnectWithBackoff(self: TestsManager)
 	end
 end
 
-function TestsManager.connectSSEClient(self: TestsManager): WebStreamClient?
+function DeltaManager.connectSSEClient(self: DeltaManager): WebStreamClient?
 	local success, sseClient = pcall(function()
 		return HttpService:CreateWebStreamClient(Enum.WebStreamClientType.SSE, {
 			Url = `{self.serverUrl}/_events`,
@@ -336,8 +326,6 @@ function TestsManager.connectSSEClient(self: TestsManager): WebStreamClient?
 	self.sseClientConnections.Closed = sseClient.Closed:Connect(function()
 		if self.active then
 			logger:warning("SSE connection closed unexpectedly")
-			-- Attempt to reconnect with exponential backoff
-			-- (WebStreamClient has a time restriction imposed by the engine, even with a keep-alive heartbeat)
 			self:reconnectWithBackoff()
 		else
 			logger:info("SSE connection closed")
@@ -349,7 +337,7 @@ function TestsManager.connectSSEClient(self: TestsManager): WebStreamClient?
 	return sseClient
 end
 
-function TestsManager.handleSSEMessage(self: TestsManager, message: string)
+function DeltaManager.handleSSEMessage(self: DeltaManager, message: string)
 	logger:trace("Received SSE message:", message)
 
 	local event = string.match(message, "event:%s*(.-)%s*\n")
@@ -362,28 +350,18 @@ function TestsManager.handleSSEMessage(self: TestsManager, message: string)
 	local data = if raw_data then HttpService:JSONDecode(raw_data) else {}
 	logger:trace(data)
 
-	-- Buffer rbxm chunks until completion message, then deserialize and run
-	if event == "test_start" then
-		logger:debug(`Received test start for {data.test_id}`)
-		self.testRbxmBuffers[data.test_id] = buffer.create(data.total_size)
-		self.testRbxmBufferOffsets[data.test_id] = 0
-	elseif event == "test_chunk" then
-		logger:debug(`Received test chunk for {data.test_id}`)
-		local rbxmBuffer = self.testRbxmBuffers[data.test_id]
-		local offset = self.testRbxmBufferOffsets[data.test_id]
-		buffer.copy(rbxmBuffer, offset, data.chunk_buffer)
-		self.testRbxmBufferOffsets[data.test_id] += buffer.len(data.chunk_buffer)
-
-		if data.is_final_chunk then
-			logger:debug(`Received final chunk for {data.test_id}`)
-			task.spawn(function()
-				local outcome = self:runTest(data.test_id)
-				self:reportTestOutcome(data.test_id, outcome)
-
-				self.testRbxmBuffers[data.test_id] = nil
-				self.testRbxmBufferOffsets[data.test_id] = nil
-			end)
-		end
+	if event == "delta_apply" then
+		logger:debug(`Received delta_apply for request {data.request_id}`)
+		task.spawn(function()
+			local outcome = self:applyDelta(data.request_id, data.delta)
+			self:reportOutcome(data.request_id, "delta_apply", outcome)
+		end)
+	elseif event == "reset" then
+		logger:debug(`Received reset for request {data.request_id}`)
+		task.spawn(function()
+			local outcome = self:resetExperience(data.request_id)
+			self:reportOutcome(data.request_id, "reset", outcome)
+		end)
 	elseif event == "shutdown" then
 		logger:info("Server is shutting down")
 		self:stop()
@@ -392,14 +370,14 @@ function TestsManager.handleSSEMessage(self: TestsManager, message: string)
 	end
 end
 
-function TestsManager.start(self: TestsManager)
+function DeltaManager.start(self: DeltaManager)
 	self.active = true
 	self:awaitHealthyServer()
 	self:connectSSEClient()
 	self:startHeartbeat()
 end
 
-function TestsManager.stop(self: TestsManager)
+function DeltaManager.stop(self: DeltaManager)
 	self.active = false
 	self:stopHeartbeat()
 	if self.sseClient then
@@ -408,7 +386,8 @@ function TestsManager.stop(self: TestsManager)
 	for _, connection in self.sseClientConnections do
 		connection:Disconnect()
 	end
-	logger:info("TestsManager stopped")
+	logger:info("DeltaManager stopped")
 end
 
-return TestsManager
+return DeltaManager
+

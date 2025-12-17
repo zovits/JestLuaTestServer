@@ -1,23 +1,22 @@
-# Jest Lua Test Server
+# Roblox RL Gym Server
 
-FastAPI-based server that manages Roblox Studio instances and coordinates Jest Lua test execution.
+FastAPI-based server that manages Roblox Studio instances and coordinates delta evaluation for reinforcement learning.
 
 ## Overview
 
-The server component of JestLuaTestServer provides a REST API for submitting tests and manages the lifecycle of Roblox Studio instances. It handles plugin installation, Studio configuration, test distribution via Server-Sent Events (SSE), and result collection.
+The server component of Roblox RL Gym provides a REST API for evaluating DataModel deltas and manages the lifecycle of Roblox Studio instances. It handles plugin installation, Studio configuration, delta distribution via Server-Sent Events (SSE), screenshot capture, and result collection.
 
 ## Features
 
+- **Delta Evaluation**: Evaluate multiple deltas against a place file with before/after screenshots
 - **Automatic Studio Management**: Launches and manages Roblox Studio processes
-- **Plugin Installation**: Automatically builds and installs the test runner plugin
+- **Plugin Installation**: Automatically builds and installs the delta manager plugin
 - **FFlag Configuration**: Sets required Studio flags for SSE support
-- **Test Queue Management**: Handles concurrent test requests with queuing
-  - Honestly, I'm just not sure if Jest would mess up if we run multiple at a time so I'm not risking it
+- **Screenshot Capture**: Captures Studio window screenshots via Windows API
 - **Real-time Communication**: SSE-based bidirectional communication with plugin
 - **Error Recovery**: Graceful handling of Studio crashes and network failures
-- **Health Monitoring**: Continuous monitoring of Studio process health
-- **Configurable Timeouts**: Per-test and global timeout configuration
 - **Authentication System**: Dual authentication with API keys for remote workers and session tokens for plugin
+- **Configurable Output**: PNG or JPEG screenshots with adjustable quality
 
 ## Installation
 
@@ -26,8 +25,7 @@ The server component of JestLuaTestServer provides a REST API for submitting tes
 - Python 3.11 or higher
 - [UV](https://github.com/astral-sh/uv) package manager
 - [Rojo](https://rojo.space/) for building Roblox files
-- [Wally](https://wally.run/) for managing Roblox packages
-- Windows OS (for Roblox Studio)
+- Windows OS (for Roblox Studio and screenshot capture)
 
 ### Setup
 
@@ -73,12 +71,12 @@ uv run python run.py
 
 **With custom configuration**:
 ```bash
-JEST_TEST_SERVER_PORT=8080 JEST_TEST_SERVER_LOG_LEVEL=DEBUG uv run python run.py
+ROBLOX_RL_GYM_PORT=8080 ROBLOX_RL_GYM_LOG_LEVEL=DEBUG uv run python run.py
 ```
 
 **Disable authentication** (for local development only):
 ```bash
-JEST_TEST_SERVER_ENABLE_AUTH=false uv run python run.py
+ROBLOX_RL_GYM_ENABLE_AUTH=false uv run python run.py
 ```
 
 ### Server Startup Process
@@ -89,94 +87,93 @@ When the server starts, it:
 2. **Generates Session Token**: Creates a unique token for plugin internal endpoints
 3. **Configures Studio**: Sets required FFlags in Studio's ClientSettings via FFlagManager
 4. **Installs the Plugin**: Builds and installs the Roblox Studio plugin with embedded session token
-5. **Builds Test Place**: Creates a Roblox place file with Jest dependencies
-6. **Launches Studio**: Starts Roblox Studio with the test place via StudioManager
-7. **Establishes Connection**: Waits for the plugin to connect via SSE
-8. **Ready for Tests**: Begins accepting test submissions
+5. **Ready for Requests**: Begins accepting evaluate requests
 
-### Submitting Tests
+### Evaluating Deltas
 
-Submit test rbxm data to the `/test` endpoint with API key authentication:
 ```python
 import requests
+import json
 
-with open("tests.rbxm", "rb") as f:
-    response = requests.post(
-        "http://localhost:8325/test",
-        data=f.read(),
-        headers={
-            "Content-Type": "application/octet-stream",
-            "X-API-Key": "your-api-key-here"  # Required for authentication
-        }
-    )
-    
+# Prepare the request
+with open("my_place.rbxl", "rb") as f:
+    place_data = f.read()
+
+deltas = [
+    "delta-string-1",
+    "delta-string-2",
+    "delta-string-3",
+]
+
+response = requests.post(
+    "http://localhost:8325/evaluate",
+    files={"place_file": ("place.rbxl", place_data)},
+    data={"deltas": json.dumps(deltas)},
+    headers={"X-API-Key": "your-api-key-here"},
+)
+
 result = response.json()
-print(f"Test ID: {result['test_id']}")
-print(f"Status: {result['status']}")
-if result['status'] == 'completed':
-    print(f"Results: {result['results']}")
-else:
-    print(f"Error: {result['error']}")
+print(f"Success: {result['success']}")
+print(f"Before screenshot: {result['before_screenshot'][:50]}...")
+
+for delta_result in result['results']:
+    print(f"Delta {delta_result['delta_index']}: {delta_result['success']}")
 ```
 
 ## API Reference
 
 ### Endpoints
 
-#### `POST /test`
-Submit a test for execution. Requires API key authentication.
+#### `POST /evaluate`
+Evaluate a list of deltas against a place file. For each delta, opens the place in Studio, captures before/after screenshots.
 
-**Request:**
-- Method: `POST`
-- Headers:
-  - `Content-Type: application/octet-stream`
-  - `X-API-Key: your-api-key` (required)
-- Body: Binary `.rbxm` file containing test modules
+**Request (multipart/form-data):**
+- `place_file`: The `.rbxl` place file (required)
+- `deltas`: JSON array of delta strings (required)
+
+**Headers:**
+- `X-API-Key: your-api-key` (required if auth enabled)
 
 **Response (200 OK):**
 ```json
 {
-  "test_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "completed",
-  "results": {
-    "success": true,
-    "testResults": [...],
-    "numTotalTests": 5,
-    "numPassedTests": 5,
-    "numFailedTests": 0
-  }
-}
-```
-
-**Response (Timeout):**
-```json
-{
-  "test_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "timeout",
-  "error": "Test execution timed out after 30 seconds"
-}
-```
-
-**Response (Error):**
-```json
-{
-  "test_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "error",
-  "error": "Failed to deserialize test file"
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "success": true,
+  "error": null,
+  "before_screenshot": "base64-encoded-image...",
+  "results": [
+    {
+      "delta_index": 0,
+      "success": true,
+      "error": null,
+      "after_screenshot": "base64-encoded-image..."
+    }
+  ],
+  "timestamp": "2025-12-16T..."
 }
 ```
 
 #### `GET /health`
-Check server and Studio status.
+Check server status.
 
-**Response:**
+**Response (idle):**
 ```json
 {
   "status": "healthy",
+  "studio_active": false
+}
+```
+
+**Response (during evaluation):**
+```json
+{
+  "status": "healthy",
+  "studio_active": true,
   "studio_running": true,
   "plugin_installed": true,
+  "plugin_connected": true,
   "fflags_applied": true,
-  "placefile_built": true
+  "place_file_exists": true
 }
 ```
 
@@ -185,50 +182,73 @@ Server-Sent Events stream for plugin communication. Protected by session token.
 
 **Event Types:**
 - `ping`: Keepalive message
-- `test_start`: Begin test transmission
-- `test_chunk`: Binary chunk of test data
-- `test_end`: Complete test transmission
+- `delta_apply`: Apply a delta string
 
-#### `POST /_results` (Internal)
-Receive test results from plugin. Protected by session token.
+#### `POST /_delta_result` (Internal)
+Receive delta application results from plugin. Protected by session token.
 
 **Request:**
 ```json
 {
-  "test_id": "550e8400-e29b-41d4-a716-446655440000",
-  "outcome": {
-    "success": true,
-    "results": {...}
-  }
+  "request_id": "550e8400-e29b-41d4-a716-446655440000",
+  "success": true,
+  "error": null
 }
 ```
+
+#### `POST /_heartbeat` (Internal)
+Receive heartbeat from plugin. Protected by session token.
 
 ## Configuration
 
 ### Environment Variables
 
-All environment variables use the prefix `JEST_TEST_SERVER_`:
+All environment variables use the prefix `ROBLOX_RL_GYM_`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `JEST_TEST_SERVER_HOST` | `127.0.0.1` | Server bind address |
-| `JEST_TEST_SERVER_PORT` | `8325` | Server port |
-| `JEST_TEST_SERVER_TEST_TIMEOUT` | `30` | Test execution timeout (seconds) |
-| `JEST_TEST_SERVER_SHUTDOWN_TIMEOUT` | `10` | Graceful shutdown timeout (seconds) |
-| `JEST_TEST_SERVER_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `JEST_TEST_SERVER_CHUNK_SIZE` | `8192` | SSE chunk size for rbxm transfer (bytes) |
-| `JEST_TEST_SERVER_CORS_ORIGINS` | `["*"]` | Allowed CORS origins (JSON array) |
-| `JEST_TEST_SERVER_ENABLE_AUTH` | `true` | Enable authentication system |
+| `HOST` | `127.0.0.1` | Server bind address |
+| `PORT` | `8325` | Server port |
+| `STEP_TIMEOUT` | `30` | Delta application timeout (seconds) |
+| `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout (seconds) |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `ENABLE_AUTH` | `true` | Enable authentication system |
+| `CORS_ORIGINS` | `["*"]` | Allowed CORS origins (JSON array) |
+| `SCREENSHOT_WIDTH` | `512` | Output screenshot width (pixels) |
+| `SCREENSHOT_HEIGHT` | `512` | Output screenshot height (pixels) |
+| `SCREENSHOT_FORMAT` | `png` | Image format: `png` or `jpeg` |
+| `SCREENSHOT_JPEG_QUALITY` | `85` | JPEG quality (1-100) |
+| `SCREENSHOT_CROP_LEFT` | `0.15` | Viewport crop from left (0.0-1.0) |
+| `SCREENSHOT_CROP_RIGHT` | `0.20` | Viewport crop from right (0.0-1.0) |
+| `SCREENSHOT_CROP_TOP` | `0.08` | Viewport crop from top (0.0-1.0) |
+| `SCREENSHOT_CROP_BOTTOM` | `0.15` | Viewport crop from bottom (0.0-1.0) |
 
 ### Configuration File
 
 Create a `.env` file in the server directory:
 ```env
-JEST_TEST_SERVER_HOST=0.0.0.0
-JEST_TEST_SERVER_PORT=8080
-JEST_TEST_SERVER_TEST_TIMEOUT=60
-JEST_TEST_SERVER_LOG_LEVEL=DEBUG
+ROBLOX_RL_GYM_HOST=0.0.0.0
+ROBLOX_RL_GYM_PORT=8080
+ROBLOX_RL_GYM_STEP_TIMEOUT=60
+ROBLOX_RL_GYM_LOG_LEVEL=DEBUG
+
+# Screenshot settings for model training
+ROBLOX_RL_GYM_SCREENSHOT_WIDTH=256
+ROBLOX_RL_GYM_SCREENSHOT_HEIGHT=256
+ROBLOX_RL_GYM_SCREENSHOT_FORMAT=jpeg
+ROBLOX_RL_GYM_SCREENSHOT_JPEG_QUALITY=80
 ```
+
+### Screenshot Configuration
+
+Screenshots are automatically cropped to remove Studio UI panels and resized for consistent model input. The default crop percentages are tuned for a typical Studio layout:
+
+- **Left (15%)**: Removes Explorer panel and Toolbox
+- **Right (20%)**: Removes Properties panel  
+- **Top (8%)**: Removes menu bar and ribbon
+- **Bottom (15%)**: Removes Output window and command bar
+
+Adjust these values based on your Studio layout. Set `SCREENSHOT_WIDTH` and `SCREENSHOT_HEIGHT` to `null` to disable resizing and return the cropped viewport at original resolution.
 
 ### Studio FFlags
 
@@ -245,7 +265,7 @@ The server automatically configures these FFlags in `ClientSettings/ClientAppSet
 ### FFlagManager
 
 Manages Roblox Studio FFlag configuration:
-- Applies required FFlags for Jest and SSE streaming
+- Applies required FFlags for SSE streaming
 - Backs up existing FFlag configuration
 - Restores original flags on shutdown
 - Provides context manager for automatic cleanup
@@ -263,20 +283,18 @@ Handles plugin lifecycle:
 
 Manages Roblox Studio process:
 - Locates Studio installation via registry and filesystem
-- Coordinates FFlagManager and PluginManager
-- Builds test place with dependencies
 - Launches and monitors Studio process
 - Handles graceful shutdown
 - Provides unified health checking across all components
 
-### Test Queue System
+### Screenshot Capture
 
-Manages test execution flow:
-- Queues incoming test requests
-- Distributes tests to plugin via SSE
-- Tracks active tests with futures
-- Enforces timeouts
-- Collects and returns results
+Captures the Studio window state:
+- Uses Windows API to find Studio window
+- Captures using `mss` library
+- Supports PNG and JPEG output formats
+- Returns base64-encoded images
+- Handles minimized/obscured windows
 
 ## Development
 
@@ -293,11 +311,12 @@ server/
 │   ├── api_keys.py             # API key management
 │   ├── endpoints/              # API endpoints
 │   │   ├── __init__.py
+│   │   ├── evaluate.py         # /evaluate endpoint
 │   │   ├── events.py           # SSE endpoint (session token)
-│   │   ├── results.py          # Results collection (session token)
-│   │   └── test.py             # Test submission (API key)
+│   │   └── delta_results.py    # Results collection (session token)
 │   └── utils/                  # Utilities
 │       ├── __init__.py
+│       ├── screenshot_capture.py  # Windows screenshot capture
 │       ├── fflag_manager.py    # FFlag management
 │       ├── plugin_manager.py   # Plugin management
 │       └── studio_manager.py   # Studio management
@@ -312,19 +331,19 @@ server/
 
 Enable debug logging:
 ```bash
-JEST_TEST_SERVER_LOG_LEVEL=DEBUG uv run python run.py
+ROBLOX_RL_GYM_LOG_LEVEL=DEBUG uv run python run.py
 ```
 
 Monitor Studio output:
 - Check Studio's output window for plugin logs
 - Review server logs for communication issues
-- Use the test client to send sample tests
 
 Common issues:
 - **Studio not found**: Check installation path in `studio_manager.py`
 - **Plugin not loading**: Verify Rojo is installed and in PATH
 - **SSE connection failed**: Check FFlags are properly set
-- **Tests timing out**: Increase `TEST_TIMEOUT` configuration
+- **Evaluations timing out**: Increase `STEP_TIMEOUT` configuration
+- **Screenshot capture failed**: Ensure Studio window is visible
 
 ## Error Handling
 
@@ -332,23 +351,15 @@ The server includes comprehensive error handling:
 
 - **Studio Crashes**: Automatically detected and reported
 - **Network Failures**: Graceful degradation with error messages
-- **Test Timeouts**: Configurable timeouts with clear error responses
-- **Plugin Errors**: Captured and returned in test results
+- **Step Timeouts**: Configurable timeouts with clear error responses
+- **Plugin Errors**: Captured and returned in response
 - **Shutdown**: Graceful cleanup of Studio and plugin
-
-## Performance Considerations
-
-- **Persistent Studio**: Eliminates startup overhead (~5-10 seconds per test)
-- **Chunked Transfer**: Large test files transferred in configurable chunks
-- **Async Processing**: Non-blocking test execution
-- **Queue Management**: Handles concurrent requests efficiently
-- **Resource Cleanup**: Proper cleanup prevents memory leaks
 
 ## Security Notes
 
 - **Dual Authentication System**:
-  - API keys protect the `/test` endpoint from unauthorized remote workers
-  - Session tokens protect internal endpoints (`/_events`, `/_results`) from external access
+  - API keys protect the `/evaluate` endpoint from unauthorized remote workers
+  - Session tokens protect internal endpoints (`/_events`, `/_delta_result`, `/_heartbeat`) from external access
 - **API Keys Management**:
   - Store in `api_keys.txt` (gitignored)
   - One key per line, comments with `#` supported
@@ -358,9 +369,8 @@ The server includes comprehensive error handling:
   - Injected into plugin configuration
   - Valid only for current server session
 - Server binds to localhost by default
-- Test files are not persisted to disk
 - Studio runs with user privileges
 
 ## License
 
-This server is part of the JestLuaTestServer project and is licensed under the Apache License 2.0.
+This server is part of the Roblox RL Gym project and is licensed under the Apache License 2.0.
