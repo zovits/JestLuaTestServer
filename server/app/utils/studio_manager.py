@@ -380,6 +380,17 @@ class StudioManager:
             "universe_id": self.universe_id,
         }
 
+    async def __aenter__(self) -> "StudioManager":
+        """Async context manager entry - starts Studio."""
+        success = await self.start_studio()
+        if not success:
+            raise RuntimeError("Failed to start Roblox Studio")
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Async context manager exit - stops Studio."""
+        await self.stop_studio()
+
 
 @asynccontextmanager
 async def managed_studio(

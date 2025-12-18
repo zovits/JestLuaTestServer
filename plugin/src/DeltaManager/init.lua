@@ -96,6 +96,28 @@ function DeltaManager.applyDelta(self: DeltaManager, requestId: RequestId, delta
 	}
 end
 
+function DeltaManager.undoDelta(self: DeltaManager, requestId: RequestId, delta: string): Outcome<nil, string>
+	logger:info(`Undoing delta for request {requestId}...`)
+
+	local success, errorMessage = pcall(function()
+		DataModelDeltaService:UndoDelta(delta)
+	end)
+
+	if not success then
+		logger:warn(`Delta undo failed for {requestId}:`, errorMessage)
+		return {
+			success = false,
+			error = tostring(errorMessage),
+		}
+	end
+
+	logger:info(`Delta undone successfully for request {requestId}`)
+	return {
+		success = true,
+		result = nil,
+	}
+end
+
 function DeltaManager.resetExperience(self: DeltaManager, requestId: RequestId): Outcome<nil, string>
 	logger:info(`Resetting experience for request {requestId}...`)
 
@@ -180,6 +202,35 @@ function DeltaManager.reportOutcome(
 	end
 
 	logger:info("Reported outcome for", requestId)
+	return true
+end
+
+function DeltaManager.reportUndoComplete(
+	self: DeltaManager,
+	requestId: RequestId,
+	outcome: Outcome<nil, string>
+): boolean
+	local success, response = pcall(HttpService.RequestAsync, HttpService, {
+		Url = `{self.serverUrl}/_undo_complete`,
+		Method = "POST" :: "POST",
+		Headers = {
+			["Content-Type"] = "application/json",
+			["Authorization"] = `Bearer {self.serverConfig.bearer_token}`,
+		},
+		Body = HttpService:JSONEncode({
+			request_id = requestId,
+			success = outcome.success,
+			error = if outcome.success then nil else outcome.error,
+		}),
+		Compress = Enum.HttpCompression.None,
+	})
+
+	if not success then
+		logger:warn("Failed to report undo complete:", response)
+		return false
+	end
+
+	logger:info("Reported undo complete for", requestId)
 	return true
 end
 
@@ -354,7 +405,17 @@ function DeltaManager.handleSSEMessage(self: DeltaManager, message: string)
 		logger:debug(`Received delta_apply for request {data.request_id}`)
 		task.spawn(function()
 			local outcome = self:applyDelta(data.request_id, data.delta)
+			-- POST to server and wait for response (server screenshots before responding)
 			self:reportOutcome(data.request_id, "delta_apply", outcome)
+			-- Undo the delta after server has captured screenshot and responded
+			if outcome.success then
+				local undoOutcome = self:undoDelta(data.request_id, data.delta)
+				-- Signal server that undo is complete so it can send the next delta
+				self:reportUndoComplete(data.request_id, undoOutcome)
+			else
+				-- Still need to signal completion even if apply failed (no undo needed)
+				self:reportUndoComplete(data.request_id, { success = true, result = nil })
+			end
 		end)
 	elseif event == "reset" then
 		logger:debug(`Received reset for request {data.request_id}`)
