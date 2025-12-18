@@ -1,6 +1,6 @@
 --!strict
 local HttpService = game:GetService("HttpService")
-local DataModelDeltaService = game:GetService("DataModelDeltaService")
+local DataModelDeltaService = require(script:FindFirstChild("DataModelDeltaService.mock"))
 
 local logger = require(script:FindFirstChild("Logger")).new()
 
@@ -390,4 +390,3 @@ function DeltaManager.stop(self: DeltaManager)
 end
 
 return DeltaManager
-
