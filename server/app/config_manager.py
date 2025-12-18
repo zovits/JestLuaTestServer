@@ -1,13 +1,25 @@
 """Centralized configuration management with environment-specific overrides"""
 
 import os
+from pathlib import Path
 from typing import Literal
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Path to .env file in the server directory
+ENV_FILE = Path(__file__).parent.parent / ".env"
 
 
 class BaseConfig(BaseSettings):
     """Base configuration with common settings"""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ROBLOX_RL_GYM_",
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     host: str = "127.0.0.1"
     port: int = 8325
@@ -16,6 +28,9 @@ class BaseConfig(BaseSettings):
     reset_timeout: int = 30
     chunk_size: int = 8192
     log_level: str = "INFO"
+
+    # Roblox Studio authentication
+    user_id: int | None = None
 
     # Authentication
     enable_auth: bool = True
@@ -39,10 +54,6 @@ class BaseConfig(BaseSettings):
     screenshot_crop_bottom: float = 0.055
     screenshot_format: str = "png"  # "png" or "jpeg"
     screenshot_jpeg_quality: int = 85  # 1-100, only used when format is "jpeg"
-
-    class Config:
-        env_prefix = "ROBLOX_RL_GYM_"
-        case_sensitive = False
 
 
 class DevelopmentConfig(BaseConfig):

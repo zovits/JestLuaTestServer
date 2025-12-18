@@ -1,19 +1,15 @@
 """
 Evaluate endpoint for RL training.
 
-Accepts a place file and list of deltas, captures before/after screenshots.
+Accepts place/universe IDs and list of deltas, captures before/after screenshots.
 """
 
 import asyncio
-import json
 import logging
-import shutil
-import tempfile
 import uuid
 from datetime import datetime
-from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth import ExternalAuthDep, InternalAuthDep
@@ -36,6 +32,14 @@ async def heartbeat(
     if studio_manager is not None:
         studio_manager.update_heartbeat()
     return {"status": "ok"}
+
+
+class EvaluateRequest(BaseModel):
+    """Request body for the /evaluate endpoint."""
+
+    place_id: int
+    universe_id: int
+    deltas: list[str]
 
 
 class DeltaEvalResult(BaseModel):
@@ -118,39 +122,38 @@ async def apply_delta_and_wait(
 async def evaluate(
     request: Request,
     _auth: ExternalAuthDep,
-    place_file: UploadFile = File(..., description="The .rbxl place file"),
-    deltas: str = Form(..., description="JSON array of delta strings"),
+    body: EvaluateRequest,
 ) -> EvaluateResponse:
     """
-    Evaluate a list of deltas against a place file.
+    Evaluate a list of deltas against a Roblox place.
 
     For each delta, opens the place in Studio, captures before/after screenshots.
     The "before" screenshot is captured once (identical for all deltas since
-    each starts from the same place file). Each delta is evaluated independently.
+    each starts from the same place). Each delta is evaluated independently.
     """
     request_id = str(uuid.uuid4())
     timestamp = datetime.now().isoformat()
 
-    # Parse deltas JSON
-    try:
-        delta_list = json.loads(deltas)
-        if not isinstance(delta_list, list):
-            raise ValueError("deltas must be a JSON array")
-        if not delta_list:
-            raise ValueError("deltas array cannot be empty")
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON in deltas: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Validate deltas list
+    if not body.deltas:
+        raise HTTPException(status_code=400, detail="deltas array cannot be empty")
 
-    # Validate file extension
-    if not place_file.filename or not place_file.filename.endswith(".rbxl"):
-        raise HTTPException(status_code=400, detail="place_file must be a .rbxl file")
+    # Validate user_id is configured
+    if app_config.user_id is None:
+        raise HTTPException(
+            status_code=500,
+            detail="user_id not configured. Set ROBLOX_RL_GYM_USER_ID environment variable.",
+        )
 
     # Acquire lock to prevent concurrent evaluations
     async with request.app.state.evaluate_lock:
         return await _run_evaluation(
-            request, request_id, timestamp, delta_list, place_file
+            request,
+            request_id,
+            timestamp,
+            body.deltas,
+            body.place_id,
+            body.universe_id,
         )
 
 
@@ -159,19 +162,15 @@ async def _run_evaluation(
     request_id: str,
     timestamp: str,
     delta_list: list,
-    place_file: UploadFile,
+    place_id: int,
+    universe_id: int,
 ) -> EvaluateResponse:
     """Internal function that runs the actual evaluation logic."""
-    # Save uploaded file to temp location
-    temp_dir = tempfile.mkdtemp(prefix="roblox_eval_")
-    temp_place_path = Path(temp_dir) / "place.rbxl"
+    # Already validated to be non-None in the evaluate endpoint
+    assert app_config.user_id is not None
+    user_id = app_config.user_id
 
     try:
-        # Write uploaded file to temp location
-        content = await place_file.read()
-        temp_place_path.write_bytes(content)
-        logger.info(f"Saved place file to {temp_place_path} ({len(content)} bytes)")
-
         before_screenshot = None
         results: list[DeltaEvalResult] = []
 
@@ -182,7 +181,7 @@ async def _run_evaluation(
         # Step 1: Capture baseline "before" screenshot
         logger.info(f"[{request_id}] Capturing baseline screenshot...")
 
-        baseline_manager = StudioManager(temp_place_path)
+        baseline_manager = StudioManager(place_id, universe_id, user_id)
         baseline_manager.plugin_manager = plugin_manager
         baseline_manager.fflag_manager = fflag_manager
 
@@ -231,7 +230,7 @@ async def _run_evaluation(
             delta_count = len(delta_list)
             logger.info(f"[{request_id}] Processing delta {idx+1}/{delta_count}")
 
-            delta_manager = StudioManager(temp_place_path)
+            delta_manager = StudioManager(place_id, universe_id, user_id)
             delta_manager.plugin_manager = plugin_manager
             delta_manager.fflag_manager = fflag_manager
 
@@ -331,10 +330,3 @@ async def _run_evaluation(
     finally:
         # Clear studio manager from app state
         request.app.state.studio_manager = None
-
-        # Cleanup temp directory and all contents
-        try:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            logger.debug(f"Cleaned up temp directory: {temp_dir}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup temp files: {e}")

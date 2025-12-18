@@ -16,12 +16,16 @@ logger = logging.getLogger(__name__)
 class StudioManager:
     """Manages Roblox Studio process lifecycle for RL training evaluations"""
 
-    def __init__(self, place_file: Path):
-        # The place file to open in Studio
-        self.place_file = place_file
+    STUDIO_PROCESS_NAME = "RobloxStudioBeta.exe"
 
-        # Process management
-        self.process: subprocess.Popen | None = None
+    def __init__(self, place_id: int, universe_id: int, user_id: int):
+        # Roblox place/universe/user IDs for launching Studio via protocol URL
+        self.place_id = place_id
+        self.universe_id = universe_id
+        self.user_id = user_id
+
+        # Process management - we track PID since we discover the process after launch
+        self.studio_pid: int | None = None
 
         # Component managers
         self.plugin_manager = None  # Set by managed_studio context
@@ -98,100 +102,141 @@ class StudioManager:
 
         return None
 
-    def _clean_lock_file(self) -> None:
-        """Remove any stale lock files from previous sessions"""
-        if not self.place_file:
-            return
+    def _build_protocol_url(self) -> str:
+        """Build the roblox-studio: protocol URL for launching Studio"""
+        return (
+            f"roblox-studio:1+userId:{self.user_id}"
+            f"+task:EditPlace+placeId:{self.place_id}+universeId:{self.universe_id}"
+        )
 
-        lock_file_path = Path(str(self.place_file) + ".lock")
-        if lock_file_path.exists():
-            logger.debug(f"Removing stale lock file: {lock_file_path}")
-            try:
-                lock_file_path.unlink()
-                logger.debug("Lock file removed successfully")
-            except Exception as e:
-                logger.warning(f"Failed to clean up stale lock file: {e}")
+    def _find_studio_pids(self) -> list[int]:
+        """Find all running RobloxStudioBeta.exe process IDs"""
+        if sys.platform != "win32":
+            return []
 
-    async def _launch_studio_process(self) -> bool:
-        """Launch the Studio process with appropriate settings"""
-        cmd = [
-            str(self.studio_path),
-            "-localPlaceFile",
-            str(self.place_file),
-        ]
-
-        logger.info(f"Starting Roblox Studio: {' '.join(cmd)}")
-
-        # Platform-specific process creation
-        if sys.platform == "win32":
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+        try:
+            # Use tasklist to find Studio processes
+            result = subprocess.run(
+                [
+                    "tasklist",
+                    "/FI",
+                    f"IMAGENAME eq {self.STUDIO_PROCESS_NAME}",
+                    "/FO",
+                    "CSV",
+                    "/NH",
+                ],
+                capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-            )
-        else:
-            self.process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
             )
 
-        logger.debug(f"Studio process created with PID: {self.process.pid}")
-        return True
+            pids = []
+            for line in result.stdout.strip().split("\n"):
+                if line and self.STUDIO_PROCESS_NAME in line:
+                    # CSV format: "RobloxStudioBeta.exe","12345","Console","1","123,456 K"
+                    parts = line.split(",")
+                    if len(parts) >= 2:
+                        # Remove quotes and parse PID
+                        pid_str = parts[1].strip('"')
+                        try:
+                            pids.append(int(pid_str))
+                        except ValueError:
+                            pass
+            return pids
+        except Exception as e:
+            logger.warning(f"Failed to find Studio processes: {e}")
+            return []
 
-    async def _verify_studio_startup(self) -> bool:
-        """Verify that Studio started successfully"""
-        if self.process is None:
-            logger.error("Studio process was not created")
-            return False
-
-        # Check immediate startup
-        await asyncio.sleep(0.1)
-        if self.process.poll() is not None:
-            logger.error(
-                f"Studio process died immediately with return code: {self.process.poll()}"
-            )
-            stdout, stderr = self.process.communicate()
-            if stdout:
-                logger.error(f"STDOUT: {stdout}")
-            if stderr:
-                logger.error(f"STDERR: {stderr}")
-            return False
-
-        # Start health monitoring
-        asyncio.create_task(self._monitor_process_health())
-
-        # Wait for full startup
-        await asyncio.sleep(5)
-
-        if self.process.poll() is not None:
-            logger.error(
-                f"Studio process exited during startup with code: {self.process.returncode}"
-            )
-            return False
-
-        logger.info("Roblox Studio started successfully")
-        return True
-
-    async def start_studio(self) -> bool:
-        """Start Roblox Studio with the configured place file"""
-        # Verify Studio is installed
-        if not self.studio_path.exists():
-            logger.error(f"Roblox Studio not found at: {self.studio_path}")
-            return False
-
-        # Verify place file exists
-        if not self.place_file.exists():
-            logger.error(f"Place file not found at: {self.place_file}")
+    def _is_pid_running(self, pid: int) -> bool:
+        """Check if a process with the given PID is still running"""
+        if sys.platform != "win32":
             return False
 
         try:
-            # Clean any stale lock files
-            self._clean_lock_file()
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            return False
 
-            # Launch Studio
+    async def _launch_studio_process(self) -> bool:
+        """Launch Studio via the roblox-studio: protocol URL using PowerShell"""
+        protocol_url = self._build_protocol_url()
+        logger.info(f"Starting Roblox Studio via protocol URL: {protocol_url}")
+
+        if sys.platform != "win32":
+            logger.error("Protocol URL launch is only supported on Windows")
+            return False
+
+        # Record existing Studio PIDs so we can identify the new one
+        existing_pids = set(self._find_studio_pids())
+        logger.debug(f"Existing Studio PIDs before launch: {existing_pids}")
+
+        # Use PowerShell's Start-Process to launch via protocol handler (fire-and-forget)
+        cmd = ["powershell", "-Command", f'Start-Process "{protocol_url}"']
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+        logger.debug(f"PowerShell launcher process created with PID: {process.pid}")
+
+        # Wait for launcher to complete (it exits quickly after spawning the handler)
+        process.wait()
+        logger.debug(f"PowerShell launcher exited with code: {process.returncode}")
+
+        return True
+
+    async def _verify_studio_startup(self, timeout: float = 60.0) -> bool:
+        """Wait for Studio process to appear and verify it started successfully"""
+        logger.info("Waiting for Roblox Studio process to start...")
+
+        start_time = asyncio.get_event_loop().time()
+
+        # Poll for Studio process to appear
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            pids = self._find_studio_pids()
+            if pids:
+                # Take the first (or newest) Studio process we find
+                self.studio_pid = pids[0]
+                logger.info(f"Found Roblox Studio process with PID: {self.studio_pid}")
+
+                # Start health monitoring
+                asyncio.create_task(self._monitor_process_health())
+
+                # Give Studio a moment to fully initialize
+                await asyncio.sleep(2)
+
+                # Verify it's still running
+                if self._is_pid_running(self.studio_pid):
+                    logger.info("Roblox Studio started successfully")
+                    return True
+                else:
+                    logger.error("Studio process exited shortly after starting")
+                    self.studio_pid = None
+                    return False
+
+            await asyncio.sleep(1)
+
+        logger.error(f"Studio process did not start within {timeout} seconds")
+        return False
+
+    async def start_studio(self) -> bool:
+        """Start Roblox Studio with the configured place/universe IDs"""
+        try:
+            # Launch Studio via protocol URL
             if not await self._launch_studio_process():
                 return False
 
@@ -204,49 +249,46 @@ class StudioManager:
 
     async def _terminate_studio_process(self) -> None:
         """Attempt graceful termination of Studio process"""
-        if self.process is None:
+        if self.studio_pid is None:
             return
 
         if sys.platform == "win32":
-            # Windows: Send WM_CLOSE
+            # Windows: Send WM_CLOSE via taskkill (without /F for graceful)
             try:
                 subprocess.run(
-                    ["taskkill", "/PID", str(self.process.pid)],
+                    ["taskkill", "/PID", str(self.studio_pid)],
                     check=False,
                     capture_output=True,
                 )
-                logger.debug("Sent graceful shutdown signal to Studio")
+                logger.debug(
+                    f"Sent graceful shutdown signal to Studio (PID: {self.studio_pid})"
+                )
             except Exception as e:
                 logger.warning(f"Could not send graceful shutdown: {e}")
-        else:
-            # Unix: Send SIGTERM
-            self.process.terminate()
-            logger.info("Sent SIGTERM to Studio process")
 
     async def _force_kill_studio_process(self) -> None:
         """Force kill Studio process"""
-        if self.process is None:
+        if self.studio_pid is None:
             return
 
         if sys.platform == "win32":
             subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
+                ["taskkill", "/F", "/T", "/PID", str(self.studio_pid)],
                 check=False,
                 capture_output=True,
             )
-        else:
-            self.process.kill()
+            logger.debug(f"Sent force kill to Studio (PID: {self.studio_pid})")
 
     async def stop_studio(self, skip_graceful: bool = False) -> bool:
         """Stop Roblox Studio gracefully or forcefully"""
-        if not self.process:
+        if self.studio_pid is None:
             logger.info("No Studio process to stop")
             return True
 
         try:
             if skip_graceful:
                 logger.info(
-                    "Force killing Studio process (skipping graceful shutdown)..."
+                    f"Force killing Studio process PID {self.studio_pid} (skipping graceful shutdown)..."
                 )
                 await self._force_kill_studio_process()
 
@@ -257,7 +299,7 @@ class StudioManager:
                 except TimeoutError:
                     logger.error("Failed to kill Studio process")
             else:
-                logger.info("Stopping Roblox Studio...")
+                logger.info(f"Stopping Roblox Studio (PID: {self.studio_pid})...")
 
                 # Attempt graceful termination
                 await self._terminate_studio_process()
@@ -281,10 +323,7 @@ class StudioManager:
                     except TimeoutError:
                         logger.error("Failed to kill Studio process")
 
-            # Cleanup
-            self._clean_lock_file()
-            self.process = None
-
+            self.studio_pid = None
             logger.info("Roblox Studio stopped")
             return True
 
@@ -293,38 +332,34 @@ class StudioManager:
             return False
 
     async def _wait_for_process(self) -> None:
-        """Wait for process to terminate"""
-        while self.process and self.process.poll() is None:
+        """Wait for Studio process to terminate"""
+        while self.studio_pid and self._is_pid_running(self.studio_pid):
             await asyncio.sleep(0.5)
 
     async def _monitor_process_health(self) -> None:
         """Monitor the health of the Studio process"""
         try:
             check_count = 0
-            while self.process:
+            while self.studio_pid:
                 await asyncio.sleep(1)
-                # Re-check after sleep since stop_studio() may have set process to None
-                if self.process is None:
+                # Re-check after sleep since stop_studio() may have cleared the PID
+                if self.studio_pid is None:
                     break
-                poll_result = self.process.poll()
+
+                is_running = self._is_pid_running(self.studio_pid)
                 check_count += 1
 
-                if poll_result is not None:
-                    if poll_result == 0:
-                        logger.info(
-                            f"Studio process exited normally after {check_count} seconds"
-                        )
-                    else:
-                        logger.error(
-                            f"Studio process exited with code {poll_result} after {check_count} seconds"
-                        )
+                if not is_running:
+                    logger.info(
+                        f"Studio process (PID: {self.studio_pid}) exited after {check_count} seconds"
+                    )
                     break
         except Exception as e:
             logger.error(f"Error monitoring Studio process health: {e}")
 
     def is_running(self) -> bool:
         """Check if Studio process is currently running"""
-        return self.process is not None and self.process.poll() is None
+        return self.studio_pid is not None and self._is_pid_running(self.studio_pid)
 
     def update_heartbeat(self) -> None:
         """Update the last heartbeat timestamp"""
@@ -341,14 +376,16 @@ class StudioManager:
             "fflags_applied": (
                 self.fflag_manager._applied if self.fflag_manager else False
             ),
-            "place_file_exists": self.place_file is not None
-            and self.place_file.exists(),
+            "place_id": self.place_id,
+            "universe_id": self.universe_id,
         }
 
 
 @asynccontextmanager
 async def managed_studio(
-    place_file: Path,
+    place_id: int,
+    universe_id: int,
+    user_id: int,
     plugin_manager=None,
     fflag_manager=None,
 ):
@@ -356,7 +393,9 @@ async def managed_studio(
     Context manager that ensures Studio is properly started and stopped.
 
     Args:
-        place_file: Path to the .rbxl place file to open
+        place_id: Roblox place ID to open
+        universe_id: Roblox universe ID for the place
+        user_id: Roblox user ID for authentication
         plugin_manager: Optional pre-installed PluginManager to reuse
         fflag_manager: Optional pre-configured FFlagManager to reuse
 
@@ -364,7 +403,7 @@ async def managed_studio(
     (useful for caching across multiple Studio instances in a session).
     If not provided, new ones are created and cleaned up on exit.
     """
-    studio_manager = StudioManager(place_file)
+    studio_manager = StudioManager(place_id, universe_id, user_id)
 
     # If managers are provided, reuse them; otherwise create and manage lifecycle
     if plugin_manager is not None and fflag_manager is not None:

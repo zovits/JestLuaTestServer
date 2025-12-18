@@ -12,6 +12,7 @@ import ctypes
 import io
 import logging
 import sys
+import time
 from dataclasses import dataclass
 
 import mss
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Windows API constants
 SW_RESTORE = 9
+SW_SHOW = 5
 
 
 @dataclass
@@ -153,9 +155,65 @@ def get_window_rect(hwnd: int) -> WindowRect | None:
     return None
 
 
+def bring_window_to_foreground(hwnd: int) -> bool:
+    """
+    Force a window to the foreground, bypassing Windows focus-stealing prevention.
+
+    Uses AttachThreadInput to temporarily attach to the foreground thread,
+    which allows SetForegroundWindow to succeed.
+
+    Args:
+        hwnd: Window handle to bring to foreground.
+
+    Returns:
+        True if the window was brought to foreground successfully.
+    """
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    # Get the thread IDs for the current process and the target window
+    current_thread_id = kernel32.GetCurrentThreadId()
+    foreground_hwnd = user32.GetForegroundWindow()
+    foreground_thread_id = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+    target_thread_id = user32.GetWindowThreadProcessId(hwnd, None)
+
+    # If we're not the foreground thread, we need to attach to it temporarily
+    attached_to_foreground = False
+    attached_to_target = False
+
+    try:
+        if current_thread_id != foreground_thread_id:
+            attached_to_foreground = user32.AttachThreadInput(
+                current_thread_id, foreground_thread_id, True
+            )
+
+        if current_thread_id != target_thread_id:
+            attached_to_target = user32.AttachThreadInput(
+                current_thread_id, target_thread_id, True
+            )
+
+        # Now we should be able to set the foreground window
+        user32.BringWindowToTop(hwnd)
+        result = user32.SetForegroundWindow(hwnd)
+
+        if result:
+            logger.debug(f"Successfully brought window {hwnd} to foreground")
+        else:
+            logger.warning(f"SetForegroundWindow returned False for hwnd {hwnd}")
+
+        return bool(result)
+
+    finally:
+        # Detach thread input
+        if attached_to_foreground:
+            user32.AttachThreadInput(current_thread_id, foreground_thread_id, False)
+        if attached_to_target:
+            user32.AttachThreadInput(current_thread_id, target_thread_id, False)
+
+
 def ensure_window_visible(hwnd: int) -> bool:
     """
-    Ensure the window is visible and not minimized.
+    Ensure the window is visible, not minimized, and in the foreground.
 
     Args:
         hwnd: Window handle.
@@ -169,9 +227,12 @@ def ensure_window_visible(hwnd: int) -> bool:
     if user32.IsIconic(hwnd):
         logger.info("Studio window is minimized, restoring...")
         user32.ShowWindow(hwnd, SW_RESTORE)
+    else:
+        # Ensure window is shown (in case it was hidden)
+        user32.ShowWindow(hwnd, SW_SHOW)
 
-    # Bring window to front (optional, may not be desired in all cases)
-    # user32.SetForegroundWindow(hwnd)
+    # Bring window to foreground so it's not covered by other windows
+    bring_window_to_foreground(hwnd)
 
     return user32.IsWindowVisible(hwnd)
 
@@ -330,9 +391,12 @@ def capture_studio_screenshot() -> tuple[str | None, str | None]:
     if hwnd is None:
         return None, "Roblox Studio window not found"
 
-    # Ensure window is visible
+    # Ensure window is visible and in foreground
     if not ensure_window_visible(hwnd):
         return None, "Failed to make Studio window visible"
+
+    # Brief delay to allow window to fully render after being brought to foreground
+    time.sleep(0.1)
 
     # Get window bounds
     rect = get_window_rect(hwnd)
