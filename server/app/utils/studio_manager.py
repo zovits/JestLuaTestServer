@@ -303,6 +303,9 @@ class StudioManager:
             check_count = 0
             while self.process:
                 await asyncio.sleep(1)
+                # Re-check after sleep since stop_studio() may have set process to None
+                if self.process is None:
+                    break
                 poll_result = self.process.poll()
                 check_count += 1
 

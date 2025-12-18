@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from app.auth import ExternalAuthDep, InternalAuthDep
 from app.config_manager import config as app_config
 from app.utils.screenshot_capture import capture_studio_screenshot
-from app.utils.studio_manager import managed_studio
+from app.utils.studio_manager import StudioManager
 
 logger = logging.getLogger(__name__)
 
@@ -182,13 +182,21 @@ async def _run_evaluation(
         # Step 1: Capture baseline "before" screenshot
         logger.info(f"[{request_id}] Capturing baseline screenshot...")
 
-        mgr = managed_studio(temp_place_path, plugin_manager, fflag_manager)
-        async with mgr as studio_manager:
-            # Temporarily set app state so SSE endpoint can find this manager
-            request.app.state.studio_manager = studio_manager
+        baseline_manager = StudioManager(temp_place_path)
+        baseline_manager.plugin_manager = plugin_manager
+        baseline_manager.fflag_manager = fflag_manager
+
+        # Set app state BEFORE starting Studio so SSE endpoint can find the manager
+        # when the plugin connects during Studio startup
+        request.app.state.studio_manager = baseline_manager
+
+        try:
+            success = await baseline_manager.start_studio()
+            if not success:
+                raise RuntimeError("Failed to start Roblox Studio for baseline")
 
             # Wait for plugin to connect
-            if not await wait_for_plugin_connection(studio_manager):
+            if not await wait_for_plugin_connection(baseline_manager):
                 return EvaluateResponse(
                     request_id=request_id,
                     success=False,
@@ -212,63 +220,82 @@ async def _run_evaluation(
             before_screenshot = screenshot
             logger.info(f"[{request_id}] Baseline screenshot captured")
 
+        finally:
+            # Always stop Studio after baseline capture
+            await baseline_manager.stop_studio()
+            request.app.state.studio_manager = None
+
         # Step 2: Process each delta
         for idx, delta in enumerate(delta_list):
             delta_request_id = f"{request_id}_delta_{idx}"
             delta_count = len(delta_list)
             logger.info(f"[{request_id}] Processing delta {idx+1}/{delta_count}")
 
+            delta_manager = StudioManager(temp_place_path)
+            delta_manager.plugin_manager = plugin_manager
+            delta_manager.fflag_manager = fflag_manager
+
+            # Set app state BEFORE starting Studio
+            request.app.state.studio_manager = delta_manager
+
             try:
-                mgr = managed_studio(temp_place_path, plugin_manager, fflag_manager)
-                async with mgr as studio_manager:
-                    request.app.state.studio_manager = studio_manager
-
-                    # Wait for plugin to connect
-                    if not await wait_for_plugin_connection(studio_manager):
-                        results.append(
-                            DeltaEvalResult(
-                                delta_index=idx,
-                                success=False,
-                                error="Plugin did not connect",
-                            )
-                        )
-                        continue
-
-                    # Apply the delta
-                    outcome = await apply_delta_and_wait(
-                        request=request,
-                        studio_manager=studio_manager,
-                        delta=delta,
-                        request_id=delta_request_id,
-                        timeout=app_config.step_timeout,
-                    )
-
-                    if not outcome.get("success"):
-                        results.append(
-                            DeltaEvalResult(
-                                delta_index=idx,
-                                success=False,
-                                error=outcome.get("error", "Unknown error"),
-                            )
-                        )
-                        continue
-
-                    # Small delay to ensure rendering is complete
-                    await asyncio.sleep(0.1)
-
-                    # Capture after screenshot
-                    screenshot, screenshot_error = capture_studio_screenshot()
-
+                success = await delta_manager.start_studio()
+                if not success:
                     results.append(
                         DeltaEvalResult(
                             delta_index=idx,
-                            success=True,
-                            error=screenshot_error,
-                            after_screenshot=screenshot,
+                            success=False,
+                            error="Failed to start Roblox Studio",
                         )
                     )
+                    continue
 
-                    logger.info(f"[{request_id}] Delta {idx} completed successfully")
+                # Wait for plugin to connect
+                if not await wait_for_plugin_connection(delta_manager):
+                    results.append(
+                        DeltaEvalResult(
+                            delta_index=idx,
+                            success=False,
+                            error="Plugin did not connect",
+                        )
+                    )
+                    continue
+
+                # Apply the delta
+                outcome = await apply_delta_and_wait(
+                    request=request,
+                    studio_manager=delta_manager,
+                    delta=delta,
+                    request_id=delta_request_id,
+                    timeout=app_config.step_timeout,
+                )
+
+                if not outcome.get("success"):
+                    results.append(
+                        DeltaEvalResult(
+                            delta_index=idx,
+                            success=False,
+                            error=outcome.get("error", "Unknown error"),
+                        )
+                    )
+                    continue
+
+                # Small delay to ensure rendering is complete
+                await asyncio.sleep(0.1)
+
+                # Capture after screenshot
+                screenshot, screenshot_error = capture_studio_screenshot()
+
+                results.append(
+                    DeltaEvalResult(
+                        delta_index=idx,
+                        success=True,
+                        error=screenshot_error,
+                        after_screenshot=screenshot,
+                    )
+                )
+
+                logger.info(f"[{request_id}] Delta {idx} completed successfully")
 
             except Exception as e:
                 logger.error(f"[{request_id}] Delta {idx} error: {e}")
@@ -279,6 +306,10 @@ async def _run_evaluation(
                         error=str(e),
                     )
                 )
+            finally:
+                # Always stop Studio after each delta
+                await delta_manager.stop_studio()
+                request.app.state.studio_manager = None
 
         return EvaluateResponse(
             request_id=request_id,
