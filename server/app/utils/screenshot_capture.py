@@ -62,15 +62,18 @@ def find_studio_window() -> int | None:
     """
     user32 = ctypes.windll.user32
 
-    # Window titles to search for (Studio uses different titles in different states)
-    studio_title_patterns = [
-        "Roblox Studio",
+    # Patterns that indicate this is NOT a Studio window (e.g., File Explorer browsing Studio folder)
+    exclusion_patterns = [
+        "File Explorer",
+        "Explorer.EXE",
     ]
 
     result_hwnd = None
+    # Track fallback candidate in case we don't find one with a place file open
+    fallback_hwnd = None
 
     def enum_callback(hwnd, _):
-        nonlocal result_hwnd
+        nonlocal result_hwnd, fallback_hwnd
         if not user32.IsWindowVisible(hwnd):
             return True
 
@@ -83,12 +86,29 @@ def find_studio_window() -> int | None:
         user32.GetWindowTextW(hwnd, buffer, length + 1)
         title = buffer.value
 
-        # Check if title matches any of our patterns
-        for pattern in studio_title_patterns:
-            if pattern in title:
+        # Skip windows that match exclusion patterns (e.g., File Explorer browsing Roblox Studio folder)
+        for exclusion in exclusion_patterns:
+            if exclusion in title:
+                logger.debug(f"Skipping excluded window: '{title}' (hwnd={hwnd})")
+                return True
+
+        # Check if this looks like a Roblox Studio window
+        if "Roblox Studio" in title:
+            logger.debug(f"Found Studio window candidate: '{title}' (hwnd={hwnd})")
+
+            # Prefer windows that have a place file open (.rbxl or .rbxlx in title)
+            has_place_file = ".rbxl" in title.lower()
+
+            if has_place_file:
+                # This is definitely the Studio window we want
                 result_hwnd = hwnd
-                logger.debug(f"Found Studio window: '{title}' (hwnd={hwnd})")
+                logger.debug(
+                    f"Selected Studio window with place file: '{title}' (hwnd={hwnd})"
+                )
                 return False  # Stop enumeration
+            elif fallback_hwnd is None:
+                # Keep as fallback if we haven't found one with a place file yet
+                fallback_hwnd = hwnd
 
         return True  # Continue enumeration
 
@@ -97,6 +117,11 @@ def find_studio_window() -> int | None:
     callback = WNDENUMPROC(enum_callback)
 
     user32.EnumWindows(callback, 0)
+
+    # Use the fallback if we didn't find one with a place file
+    if result_hwnd is None and fallback_hwnd is not None:
+        result_hwnd = fallback_hwnd
+        logger.debug(f"Using fallback Studio window (hwnd={result_hwnd})")
 
     return result_hwnd
 
@@ -168,6 +193,14 @@ def crop_to_viewport(image: Image.Image) -> Image.Image:
         Cropped image containing just the viewport.
     """
     width, height = image.size
+
+    if (
+        app_config.screenshot_crop_left == 0
+        and app_config.screenshot_crop_right == 0
+        and app_config.screenshot_crop_top == 0
+        and app_config.screenshot_crop_bottom == 0
+    ):
+        return image
 
     # Calculate crop boundaries based on percentages
     left = int(width * app_config.screenshot_crop_left)
