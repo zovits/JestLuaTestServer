@@ -31,12 +31,12 @@ class BaseConfig(BaseSettings):
     cors_origins: list[str] = ["*"]
 
     # Screenshot settings
-    screenshot_width: int | None = 512
-    screenshot_height: int | None = 512
-    screenshot_crop_left: float = 0.15
-    screenshot_crop_right: float = 0.20
-    screenshot_crop_top: float = 0.08
-    screenshot_crop_bottom: float = 0.15
+    screenshot_width: int | None = None
+    screenshot_height: int | None = None
+    screenshot_crop_left: float = 0.125
+    screenshot_crop_right: float = 0.0
+    screenshot_crop_top: float = 0.143
+    screenshot_crop_bottom: float = 0.055
     screenshot_format: str = "png"  # "png" or "jpeg"
     screenshot_jpeg_quality: int = 85  # 1-100, only used when format is "jpeg"
 
